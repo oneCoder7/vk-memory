@@ -1,0 +1,121 @@
+{
+  "id": "memory-viking-local",
+  "kind": "memory",
+  "uiHints": {
+    "envConfigPath": {
+      "label": "Env Config Path",
+      "placeholder": "~/.viking-memory/plugin.env.json",
+      "help": "First-run interactive config JSON path. Plugin reads this file automatically.",
+      "advanced": true
+    },
+    "rootDir": {
+      "label": "Memory Root Dir",
+      "placeholder": "~/.viking-memory",
+      "help": "All memory and timeline data is stored here."
+    },
+    "debugLogs": {
+      "label": "Debug Logs",
+      "help": "Enable verbose runtime logs for troubleshooting.",
+      "placeholder": "false",
+      "advanced": true
+    },
+    "recallLimit": {
+      "label": "Memory Recall Limit",
+      "placeholder": "6",
+      "advanced": true
+    },
+    "recallScoreThreshold": {
+      "label": "Memory Recall Threshold",
+      "placeholder": "0.12",
+      "advanced": true
+    },
+    "includeOverviewInInject": {
+      "label": "Inject Memory Overview",
+      "help": "Include L1 overview snippets for extracted memories.",
+      "advanced": true
+    },
+    "timelineRecallLimit": {
+      "label": "Timeline Recall Limit",
+      "placeholder": "4",
+      "advanced": true
+    },
+    "timelineScoreThreshold": {
+      "label": "Timeline Recall Threshold",
+      "placeholder": "0.08",
+      "advanced": true
+    },
+    "includeTimelineOverviewInInject": {
+      "label": "Inject Timeline Overview",
+      "help": "Include L1 overview snippets for timeline chunks.",
+      "advanced": true
+    },
+    "detailOnRecallTool": {
+      "label": "Recall Tool Loads Details",
+      "help": "Whether recall tools load L2 details by default.",
+      "advanced": true
+    },
+    "detailChars": {
+      "label": "Detail Snippet Chars",
+      "placeholder": "1200",
+      "help": "Max L2 characters returned when details are requested.",
+      "advanced": true
+    },
+    "detailCacheSize": {
+      "label": "Detail Cache Size",
+      "placeholder": "64",
+      "help": "Max L2 files kept in in-memory LRU cache.",
+      "advanced": true
+    },
+    "mem0TimeoutMs": {
+      "label": "Mem0 Timeout (ms)",
+      "placeholder": "30000",
+      "advanced": true
+    },
+    "semanticCandidateMultiplier": {
+      "label": "Semantic Candidate Multiplier",
+      "placeholder": "6",
+      "help": "Multiplier for semantic candidate pool before rerank.",
+      "advanced": true
+    },
+    "semanticBlendWeight": {
+      "label": "Semantic Blend Weight",
+      "placeholder": "0.6",
+      "help": "Final score blend: semantic*(1-w)+rerank*w.",
+      "advanced": true
+    },
+    "semanticTimeoutMs": {
+      "label": "Semantic Timeout (ms)",
+      "placeholder": "8000",
+      "advanced": true
+    },
+    "semanticBackfillLimit": {
+      "label": "Semantic Backfill Limit",
+      "placeholder": "400",
+      "help": "How many recent memory/timeline chunks to backfill into vector index on startup.",
+      "advanced": true
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "envConfigPath": { "type": "string" },
+      "rootDir": { "type": "string" },
+      "debugLogs": { "type": "boolean" },
+      "recallLimit": { "type": "number" },
+      "recallScoreThreshold": { "type": "number" },
+      "includeOverviewInInject": { "type": "boolean" },
+      "timelineRecallLimit": { "type": "number" },
+      "timelineScoreThreshold": { "type": "number" },
+      "includeTimelineOverviewInInject": { "type": "boolean" },
+      "detailOnRecallTool": { "type": "boolean" },
+      "detailChars": { "type": "number" },
+      "detailCacheSize": { "type": "number" },
+      "mem0TimeoutMs": { "type": "number" },
+      "semanticCandidateMultiplier": { "type": "number" },
+      "semanticBlendWeight": { "type": "number" },
+      "semanticTimeoutMs": { "type": "number" },
+      "semanticBackfillLimit": { "type": "number" }
+    }
+  }
+}

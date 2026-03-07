@@ -1,0 +1,24 @@
+{
+  "name": "@openclaw/memory-viking-local",
+  "version": "0.1.0",
+  "description": "OpenClaw local memory plugin with lazy L0/L1/L2 storage under ~/.viking-memory",
+  "type": "module",
+  "scripts": {
+    "setup": "node ./cli/vk-memory.js setup",
+    "config": "node ./cli/vk-memory.js config",
+    "start": "node ./cli/vk-memory.js start",
+    "stop": "node ./cli/vk-memory.js stop"
+  },
+  "bin": {
+    "vk-memory": "./cli/vk-memory.js",
+    "memory-viking-local-setup": "./setup-helper/cli.js"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "0.34.48"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
