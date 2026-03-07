@@ -210,7 +210,10 @@ function extractTextsFromUserMessages(messages: unknown[]): string[] {
     }
     const content = msgObj.content;
     if (typeof content === "string") {
-      texts.push(content);
+      const normalized = sanitizeTextForMemory(content);
+      if (normalized) {
+        texts.push(normalized);
+      }
       continue;
     }
     if (!Array.isArray(content)) {
@@ -222,7 +225,10 @@ function extractTextsFromUserMessages(messages: unknown[]): string[] {
       }
       const blockObj = block as Record<string, unknown>;
       if (blockObj.type === "text" && typeof blockObj.text === "string") {
-        texts.push(blockObj.text);
+        const normalized = sanitizeTextForMemory(blockObj.text);
+        if (normalized) {
+          texts.push(normalized);
+        }
       }
     }
   }
@@ -286,6 +292,7 @@ function extractTextBlocksFromContent(content: unknown): string[] {
 
 export function extractTimelineMessages(messages: unknown[]): Array<{ role: string; text: string }> {
   const out: Array<{ role: string; text: string }> = [];
+  const allowedRoles = new Set(["user", "assistant"]);
 
   for (const msg of messages) {
     if (!msg || typeof msg !== "object") {
@@ -293,6 +300,9 @@ export function extractTimelineMessages(messages: unknown[]): Array<{ role: stri
     }
     const obj = msg as Record<string, unknown>;
     const role = sanitizeRole(obj.role);
+    if (!allowedRoles.has(role)) {
+      continue;
+    }
     const textBlocks = extractTextBlocksFromContent(obj.content);
 
     for (const text of textBlocks) {

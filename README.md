@@ -242,6 +242,7 @@ vk-memory uninstall
 
 - 模板：`[deploy/local-stack/.env.example](./deploy/local-stack/.env.example)`
 - 必填：`MEM0_LLM_API_KEY`
+- 默认：`MEM0_LLM_TEMPERATURE=0.1`、`MEM0_LLM_MAX_TOKENS=300`（可在 `vk-memory config --advanced` 调整）
 
 ## 10. 默认端口
 
@@ -272,6 +273,12 @@ vk-memory uninstall
 - `openclaw memory` CLI 是 OpenClaw 内置 memory 管理视图，不等同于你当前 memory slot 插件的数据面。
 - 以 `plugins.slots.memory` 和插件日志为准。
 
+1. 接入后为什么对话变慢？
+
+- 每轮 `before_agent_start` 都会做一次混合召回（embedding + qdrant + rerank，memory/timeline 两路）。
+- 如果 Agent 再主动调用 `memory_recall`，会多一轮召回（新版本已做并行与 rerank 候选上限优化）。
+- 可优先调小：`semanticCandidateMultiplier`（建议 2~3）、`recallLimit`、`timelineRecallLimit`。
+
 1. 如何开详细日志排查？
 
 - `vk-memory config --advanced`
@@ -280,6 +287,12 @@ vk-memory uninstall
 - 插件日志文件位于：`~/.viking-memory/logs/sessions/<session-id>/<YYYY-MM-DD>.log`
 - 会话无关日志会写到：`~/.viking-memory/logs/sessions/system/<YYYY-MM-DD>.log`
 - 实时查看示例：`tail -f ~/.viking-memory/logs/sessions/default/$(date +%F).log`
+- 关键性能日志（开启 `debugLogs` 后）：
+  - `retrieve.memory.start/done`
+  - `retrieve.timeline.start/done`
+  - `memory_recall.start/done`
+  - `auto-recall.start/done`
+  - `summary.mem0.start/done` 与 `summary.mem0.http.start/done`
 
 ## 12. 故障排查
 

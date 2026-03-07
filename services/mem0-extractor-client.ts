@@ -139,9 +139,6 @@ export class Mem0ExtractorClient {
         source: "openclaw-memory-viking-local",
       },
     };
-    if (this.cfg.mem0AgentId) {
-      payload.agent_id = this.cfg.mem0AgentId;
-    }
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -149,6 +146,13 @@ export class Mem0ExtractorClient {
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.cfg.mem0TimeoutMs);
+    const startedAt = Date.now();
+    const userTurns = messages.filter((m) => m.role === "user").length;
+    const assistantTurns = messages.filter((m) => m.role === "assistant").length;
+    const totalChars = messages.reduce((sum, m) => sum + m.content.length, 0);
+    this.logger.info?.(
+      `memory-viking-local: summary.mem0.http.start session=${sessionId} turns=user:${userTurns},assistant:${assistantTurns} chars=${totalChars}`,
+    );
     try {
       const response = await fetch(`${this.cfg.mem0BaseUrl}/memories`, {
         method: "POST",
@@ -164,9 +168,12 @@ export class Mem0ExtractorClient {
       const parsed = bodyText ? safeJsonParse<unknown>(bodyText, null) : null;
       const rows = this.normalizeRows(parsed);
       const candidates = this.normalizeCandidates(rows);
+      this.logger.info?.(
+        `memory-viking-local: summary.mem0.http.done session=${sessionId} elapsedMs=${Date.now() - startedAt} status=${response.status} rows=${rows.length} candidates=${candidates.length}`,
+      );
       if (candidates.length === 0) {
         this.logger.info?.(
-          `memory-viking-local: Mem0 returned no durable memories (session=${sessionId}, rows=${rows.length})`,
+          `memory-viking-local: Mem0 returned no durable memories (session=${sessionId}, rows=${rows.length}, turns=user:${userTurns},assistant:${assistantTurns}, chars=${totalChars})`,
         );
       }
       return candidates;
@@ -174,7 +181,7 @@ export class Mem0ExtractorClient {
       const raw = String(err);
       const hint = this.buildTroubleshootingHint(raw);
       this.logger.warn(
-        `memory-viking-local: Mem0 extraction failed: ${raw}${hint ? ` (hint: ${hint})` : ""}`,
+        `memory-viking-local: summary.mem0.http.done session=${sessionId} elapsedMs=${Date.now() - startedAt} status=error error=${raw}${hint ? ` (hint: ${hint})` : ""}`,
       );
       return [];
     } finally {

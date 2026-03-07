@@ -68,79 +68,165 @@ const memoryPlugin = {
     const timelineStore = new VikingLocalTimelineStore(cfg);
     const mem0 = new Mem0ExtractorClient(cfg, serviceLogger);
     const semantic = new SemanticVectorBridge(cfg, serviceLogger);
+    const computeRerankLimit = (limit: number, candidateLimit: number): number =>
+      Math.max(limit, Math.min(candidateLimit, limit * 2));
 
-    const recallMemory = async (query: string, options: RecallOptions): Promise<MemoryMatch[]> => {
-      const candidateLimit = Math.max(options.limit, options.limit * cfg.semanticCandidateMultiplier);
-      const semanticHits = await semantic.search(query, {
-        source: "memory",
-        limit: candidateLimit,
-      });
-      if (semanticHits.length === 0) {
-        return [];
+    const recallMemory = async (
+      query: string,
+      options: RecallOptions,
+      sessionId = "system",
+      scene = "unknown",
+    ): Promise<MemoryMatch[]> => {
+      const startedAt = Date.now();
+      try {
+        const candidateLimit = Math.max(options.limit, options.limit * cfg.semanticCandidateMultiplier);
+        logDebug(
+          `retrieve.memory.start scene=${scene} limit=${options.limit} threshold=${options.scoreThreshold} candidateLimit=${candidateLimit}`,
+          sessionId,
+        );
+
+        const semanticStartedAt = Date.now();
+        const semanticHits = await semantic.search(query, {
+          source: "memory",
+          limit: candidateLimit,
+        });
+        const semanticMs = Date.now() - semanticStartedAt;
+        if (semanticHits.length === 0) {
+          logDebug(
+            `retrieve.memory.done scene=${scene} elapsedMs=${Date.now() - startedAt} semanticMs=${semanticMs} loadMs=0 rerankMs=0 semanticHits=0 loaded=0 rerankDocs=0 result=0`,
+            sessionId,
+          );
+          return [];
+        }
+
+        const loadStartedAt = Date.now();
+        let candidates = await store.getByUris(
+          semanticHits.map((item) => item.uri),
+          {
+            includeDetails: options.includeDetails,
+            detailChars: options.detailChars,
+          },
+        );
+        const loadMs = Date.now() - loadStartedAt;
+        if (candidates.length === 0) {
+          logDebug(
+            `retrieve.memory.done scene=${scene} elapsedMs=${Date.now() - startedAt} semanticMs=${semanticMs} loadMs=${loadMs} rerankMs=0 semanticHits=${semanticHits.length} loaded=0 rerankDocs=0 result=0`,
+            sessionId,
+          );
+          return [];
+        }
+        candidates = applySemanticScores(candidates, semanticHits);
+
+        let rerankMs = 0;
+        let rerankDocs = 0;
+        if (candidates.length > 1) {
+          const rerankLimit = computeRerankLimit(options.limit, candidateLimit);
+          rerankDocs = Math.min(candidates.length, rerankLimit);
+          const rerankInput = candidates
+            .slice(0, rerankLimit)
+            .map((item) => ({ id: item.uri, text: `${item.abstract}\n${item.overview}` }));
+          const rerankStartedAt = Date.now();
+          const rerankScores = await semantic.rerank(query, rerankInput);
+          rerankMs = Date.now() - rerankStartedAt;
+          candidates = applyRerankBlend(candidates, rerankScores, cfg.semanticBlendWeight);
+        }
+
+        const result = candidates
+          .filter((item) => item.score >= options.scoreThreshold)
+          .sort((a, b) => b.score - a.score)
+          .slice(0, options.limit);
+        logDebug(
+          `retrieve.memory.done scene=${scene} elapsedMs=${Date.now() - startedAt} semanticMs=${semanticMs} loadMs=${loadMs} rerankMs=${rerankMs} semanticHits=${semanticHits.length} loaded=${candidates.length} rerankDocs=${rerankDocs} result=${result.length}`,
+          sessionId,
+        );
+        return result;
+      } catch (err) {
+        logWarn(
+          `retrieve.memory.done scene=${scene} elapsedMs=${Date.now() - startedAt} status=error error=${String(err)}`,
+          sessionId,
+        );
+        throw err;
       }
-
-      let candidates = await store.getByUris(
-        semanticHits.map((item) => item.uri),
-        {
-          includeDetails: options.includeDetails,
-          detailChars: options.detailChars,
-        },
-      );
-      if (candidates.length === 0) {
-        return [];
-      }
-      candidates = applySemanticScores(candidates, semanticHits);
-
-      if (candidates.length > 1) {
-        const rerankDocs = candidates
-          .slice(0, candidateLimit)
-          .map((item) => ({ id: item.uri, text: `${item.abstract}\n${item.overview}` }));
-        const rerankScores = await semantic.rerank(query, rerankDocs);
-        candidates = applyRerankBlend(candidates, rerankScores, cfg.semanticBlendWeight);
-      }
-
-      return candidates
-        .filter((item) => item.score >= options.scoreThreshold)
-        .sort((a, b) => b.score - a.score)
-        .slice(0, options.limit);
     };
 
-    const recallTimeline = async (query: string, options: TimelineRecallOptions): Promise<TimelineMatch[]> => {
-      const candidateLimit = Math.max(options.limit, options.limit * cfg.semanticCandidateMultiplier);
-      const semanticHits = await semantic.search(query, {
-        source: "timeline",
-        limit: candidateLimit,
-        excludeSessionId: options.excludeSessionId,
-      });
-      if (semanticHits.length === 0) {
-        return [];
-      }
+    const recallTimeline = async (
+      query: string,
+      options: TimelineRecallOptions,
+      sessionId = "system",
+      scene = "unknown",
+    ): Promise<TimelineMatch[]> => {
+      const startedAt = Date.now();
+      try {
+        const candidateLimit = Math.max(options.limit, options.limit * cfg.semanticCandidateMultiplier);
+        logDebug(
+          `retrieve.timeline.start scene=${scene} limit=${options.limit} threshold=${options.scoreThreshold} candidateLimit=${candidateLimit} excludeSession=${options.excludeSessionId ?? ""}`,
+          sessionId,
+        );
 
-      let candidates = await timelineStore.getByUris(
-        semanticHits.map((item) => item.uri),
-        {
-          includeDetails: options.includeDetails,
-          detailChars: options.detailChars,
+        const semanticStartedAt = Date.now();
+        const semanticHits = await semantic.search(query, {
+          source: "timeline",
+          limit: candidateLimit,
           excludeSessionId: options.excludeSessionId,
-        },
-      );
-      if (candidates.length === 0) {
-        return [];
-      }
-      candidates = applySemanticScores(candidates, semanticHits);
+        });
+        const semanticMs = Date.now() - semanticStartedAt;
+        if (semanticHits.length === 0) {
+          logDebug(
+            `retrieve.timeline.done scene=${scene} elapsedMs=${Date.now() - startedAt} semanticMs=${semanticMs} loadMs=0 rerankMs=0 semanticHits=0 loaded=0 rerankDocs=0 result=0`,
+            sessionId,
+          );
+          return [];
+        }
 
-      if (candidates.length > 1) {
-        const rerankDocs = candidates
-          .slice(0, candidateLimit)
-          .map((item) => ({ id: item.uri, text: `${item.abstract}\n${item.overview}` }));
-        const rerankScores = await semantic.rerank(query, rerankDocs);
-        candidates = applyRerankBlend(candidates, rerankScores, cfg.semanticBlendWeight);
-      }
+        const loadStartedAt = Date.now();
+        let candidates = await timelineStore.getByUris(
+          semanticHits.map((item) => item.uri),
+          {
+            includeDetails: options.includeDetails,
+            detailChars: options.detailChars,
+            excludeSessionId: options.excludeSessionId,
+          },
+        );
+        const loadMs = Date.now() - loadStartedAt;
+        if (candidates.length === 0) {
+          logDebug(
+            `retrieve.timeline.done scene=${scene} elapsedMs=${Date.now() - startedAt} semanticMs=${semanticMs} loadMs=${loadMs} rerankMs=0 semanticHits=${semanticHits.length} loaded=0 rerankDocs=0 result=0`,
+            sessionId,
+          );
+          return [];
+        }
+        candidates = applySemanticScores(candidates, semanticHits);
 
-      return candidates
-        .filter((item) => item.score >= options.scoreThreshold)
-        .sort((a, b) => b.score - a.score)
-        .slice(0, options.limit);
+        let rerankMs = 0;
+        let rerankDocsCount = 0;
+        if (candidates.length > 1) {
+          const rerankLimit = computeRerankLimit(options.limit, candidateLimit);
+          rerankDocsCount = Math.min(candidates.length, rerankLimit);
+          const rerankDocs = candidates
+            .slice(0, rerankLimit)
+            .map((item) => ({ id: item.uri, text: `${item.abstract}\n${item.overview}` }));
+          const rerankStartedAt = Date.now();
+          const rerankScores = await semantic.rerank(query, rerankDocs);
+          rerankMs = Date.now() - rerankStartedAt;
+          candidates = applyRerankBlend(candidates, rerankScores, cfg.semanticBlendWeight);
+        }
+
+        const result = candidates
+          .filter((item) => item.score >= options.scoreThreshold)
+          .sort((a, b) => b.score - a.score)
+          .slice(0, options.limit);
+        logDebug(
+          `retrieve.timeline.done scene=${scene} elapsedMs=${Date.now() - startedAt} semanticMs=${semanticMs} loadMs=${loadMs} rerankMs=${rerankMs} semanticHits=${semanticHits.length} loaded=${candidates.length} rerankDocs=${rerankDocsCount} result=${result.length}`,
+          sessionId,
+        );
+        return result;
+      } catch (err) {
+        logWarn(
+          `retrieve.timeline.done scene=${scene} elapsedMs=${Date.now() - startedAt} status=error error=${String(err)}`,
+          sessionId,
+        );
+        throw err;
+      }
     };
 
     api.registerTool(
@@ -148,7 +234,7 @@ const memoryPlugin = {
         name: "memory_recall",
         label: "Memory Recall (Viking Local)",
         description:
-          "Recall extracted memories and/or full timeline chunks from ~/.viking-memory using lazy L0/L1/L2 loading.",
+          "Manual recall tool. Auto-recall runs before each round; call this only when explicit memory search/details are needed.",
         parameters: Type.Object({
           query: Type.String({ description: "Search query" }),
           limit: Type.Optional(Type.Number({ description: "Max results" })),
@@ -197,28 +283,47 @@ const memoryPlugin = {
           const sourceRaw =
             typeof (params as { source?: string }).source === "string" ? (params as { source: string }).source : "hybrid";
           const source = sourceRaw === "memory" || sourceRaw === "timeline" ? sourceRaw : "hybrid";
+          const startedAt = Date.now();
+          logDebug(
+            `memory_recall.start source=${source} limit=${limit} timelineLimit=${timelineLimit} includeDetails=${includeDetails} query="${truncate(query, 120)}"`,
+            "tool",
+          );
 
-          const memoryMatches =
-            source === "timeline"
-              ? []
-              : await recallMemory(query, {
-                  limit,
-                  scoreThreshold,
-                  includeDetails,
-                  detailChars,
-                });
-
-          const timelineMatches =
-            source === "memory"
-              ? []
-              : await recallTimeline(query, {
-                  limit: timelineLimit,
-                  scoreThreshold: timelineScoreThreshold,
-                  includeDetails,
-                  detailChars,
-                });
+          let memoryMatches: MemoryMatch[] = [];
+          let timelineMatches: TimelineMatch[] = [];
+          if (source === "memory") {
+            memoryMatches = await recallMemory(query, {
+              limit,
+              scoreThreshold,
+              includeDetails,
+              detailChars,
+            }, "tool", "tool_recall_memory");
+          } else if (source === "timeline") {
+            timelineMatches = await recallTimeline(query, {
+              limit: timelineLimit,
+              scoreThreshold: timelineScoreThreshold,
+              includeDetails,
+              detailChars,
+            }, "tool", "tool_recall_timeline");
+          } else {
+            [memoryMatches, timelineMatches] = await Promise.all([
+              recallMemory(query, {
+                limit,
+                scoreThreshold,
+                includeDetails,
+                detailChars,
+              }, "tool", "tool_recall_hybrid"),
+              recallTimeline(query, {
+                limit: timelineLimit,
+                scoreThreshold: timelineScoreThreshold,
+                includeDetails,
+                detailChars,
+              }, "tool", "tool_recall_hybrid"),
+            ]);
+          }
 
           if (memoryMatches.length === 0 && timelineMatches.length === 0) {
+            logDebug(`memory_recall.done elapsedMs=${Date.now() - startedAt} memory=0 timeline=0 result=0`, "tool");
             return {
               content: [{ type: "text", text: "No relevant local memory/timeline context found." }],
               details: { count: 0, query, source },
@@ -252,6 +357,10 @@ const memoryPlugin = {
             }
           }
 
+          logDebug(
+            `memory_recall.done elapsedMs=${Date.now() - startedAt} memory=${memoryMatches.length} timeline=${timelineMatches.length} result=${memoryMatches.length + timelineMatches.length}`,
+            "tool",
+          );
           return {
             content: [{ type: "text", text: sections.join("\n\n") }],
             details: {
@@ -382,7 +491,7 @@ const memoryPlugin = {
             scoreThreshold: Math.max(0.01, cfg.recallScoreThreshold * 0.6),
             includeDetails: false,
             detailChars: cfg.detailChars,
-          });
+          }, "tool", "memory_forget_lookup");
 
           if (candidates.length === 0) {
             return {
@@ -455,22 +564,29 @@ const memoryPlugin = {
 
       const sessionId = resolveSessionIdFromEvent(event);
       try {
-        const memories = await recallMemory(query, {
-          limit: cfg.recallLimit,
-          scoreThreshold: cfg.recallScoreThreshold,
-          includeDetails: false,
-          detailChars: cfg.detailChars,
-        });
-
-        const timeline = await recallTimeline(query, {
-          limit: cfg.timelineRecallLimit,
-          scoreThreshold: cfg.timelineScoreThreshold,
-          includeDetails: false,
-          detailChars: cfg.detailChars,
-          excludeSessionId: sessionId,
-        });
+        const recallStartedAt = Date.now();
+        logDebug(
+          `auto-recall.start query="${truncate(query, 120)}" memoryLimit=${cfg.recallLimit} timelineLimit=${cfg.timelineRecallLimit}`,
+          sessionId,
+        );
+        const [memories, timeline] = await Promise.all([
+          recallMemory(query, {
+            limit: cfg.recallLimit,
+            scoreThreshold: cfg.recallScoreThreshold,
+            includeDetails: false,
+            detailChars: cfg.detailChars,
+          }, sessionId, "auto_recall"),
+          recallTimeline(query, {
+            limit: cfg.timelineRecallLimit,
+            scoreThreshold: cfg.timelineScoreThreshold,
+            includeDetails: false,
+            detailChars: cfg.detailChars,
+            excludeSessionId: sessionId,
+          }, sessionId, "auto_recall"),
+        ]);
 
         if (memories.length === 0 && timeline.length === 0) {
+          logDebug(`auto-recall.done elapsedMs=${Date.now() - recallStartedAt} memory=0 timeline=0 injected=false`, sessionId);
           return;
         }
 
@@ -511,7 +627,7 @@ const memoryPlugin = {
         }
 
         logDebug(
-          `auto-recall injected memory=${memories.length}, timeline=${timeline.length}, query="${truncate(query, 120)}"`,
+          `auto-recall.done elapsedMs=${Date.now() - recallStartedAt} memory=${memories.length} timeline=${timeline.length} injected=true query="${truncate(query, 120)}"`,
           sessionId,
         );
 
@@ -570,10 +686,15 @@ const memoryPlugin = {
       }
 
       try {
+        const summaryStartedAt = Date.now();
+        logDebug(
+          `summary.mem0.start reason=${batchDecision.reason} batchTurns=${batchDecision.batch.length} pendingTurns=${batchDecision.pendingTurns} pendingChars=${batchDecision.pendingChars}`,
+          sessionId,
+        );
         const extracted = await mem0.extract(batchDecision.batch, sessionId);
         if (extracted.length === 0) {
           logDebug(
-            `mem0 produced 0 memories (session=${sessionId}, reason=${batchDecision.reason}, batchTurns=${batchDecision.batch.length}, pendingChars=${batchDecision.pendingChars})`,
+            `summary.mem0.done elapsedMs=${Date.now() - summaryStartedAt} extracted=0 stored=0 duplicate=0 reason=${batchDecision.reason}`,
             sessionId,
           );
           return;
@@ -610,6 +731,10 @@ const memoryPlugin = {
 
         logInfo(
           `mem0 stored=${storedCount}, duplicate=${duplicateCount}, candidates=${extracted.length}, reason=${batchDecision.reason}, batchTurns=${batchDecision.batch.length}`,
+          sessionId,
+        );
+        logDebug(
+          `summary.mem0.done elapsedMs=${Date.now() - summaryStartedAt} extracted=${extracted.length} stored=${storedCount} duplicate=${duplicateCount} reason=${batchDecision.reason}`,
           sessionId,
         );
       } catch (err) {

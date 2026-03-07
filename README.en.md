@@ -226,6 +226,7 @@ Both `memory` and `timeline` use L0/L1/L2:
 2. Stack env: `deploy/local-stack/.env`
 - Template: [`deploy/local-stack/.env.example`](./deploy/local-stack/.env.example)
 - Required: `MEM0_LLM_API_KEY`
+- Defaults: `MEM0_LLM_TEMPERATURE=0.1`, `MEM0_LLM_MAX_TOKENS=300` (tunable via `vk-memory config --advanced`)
 
 ## 10. Default Ports
 
@@ -252,13 +253,24 @@ If ports are changed, you may also need:
 - `openclaw memory` CLI reflects OpenClaw built-in memory indexing view, not necessarily your active memory-slot plugin data plane.
 - Trust `plugins.slots.memory` + plugin logs for slot-level behavior.
 
-4. How to enable verbose logs?
+4. Why did conversations become slower after enabling this plugin?
+- Each round runs hybrid auto-recall in `before_agent_start` (embedding + qdrant + rerank across memory/timeline).
+- If the agent also calls `memory_recall`, that adds another recall pass (newer code parallelizes recall and caps rerank candidates).
+- Tune first: `semanticCandidateMultiplier` (recommend 2-3), `recallLimit`, `timelineRecallLimit`.
+
+5. How to enable verbose logs?
 - `vk-memory config --advanced`
 - Set `debugLogs = y`
 - Restart `openclaw gateway`
 - Plugin logs are written to: `~/.viking-memory/logs/sessions/<session-id>/<YYYY-MM-DD>.log`
 - Non-session logs are written to: `~/.viking-memory/logs/sessions/system/<YYYY-MM-DD>.log`
 - Live tail example: `tail -f ~/.viking-memory/logs/sessions/default/$(date +%F).log`
+- Performance markers (with `debugLogs` enabled):
+  - `retrieve.memory.start/done`
+  - `retrieve.timeline.start/done`
+  - `memory_recall.start/done`
+  - `auto-recall.start/done`
+  - `summary.mem0.start/done` and `summary.mem0.http.start/done`
 
 ## 12. Troubleshooting
 
