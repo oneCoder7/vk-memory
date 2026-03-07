@@ -23,6 +23,7 @@
 
 说明：
 
+- 默认本地栈仅 4 个容器：`mem0` + `qdrant` + `infinity-embed` + `infinity-rerank`。
 - Qdrant + Infinity（embedding/rerank）全部本地容器，不需要单独 API Key。
 - 兼容 OpenAI / OpenRouter / DeepSeek / SiliconFlow / 火山 Ark 等 OpenAI-compatible 供应商。
 
@@ -290,7 +291,7 @@ vk-memory uninstall
 1. Mem0 提炼没生效
 
 - `vk-memory status`
-- `cd deploy/local-stack && docker compose logs -f mem0 mem0-configurator`
+- `cd deploy/local-stack && docker compose logs -f mem0`
 
 1. 语义召回为空
 

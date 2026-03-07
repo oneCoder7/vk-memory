@@ -21,6 +21,7 @@ All local data is stored under `~/.viking-memory`.
 4. One OpenAI-compatible LLM API key (for Mem0 summarization only)
 
 Notes:
+- Default local stack is only 4 containers: `mem0` + `qdrant` + `infinity-embed` + `infinity-rerank`.
 - Qdrant + Infinity are local containers, no extra embedding API key required.
 - Any OpenAI-compatible provider is supported (OpenAI, OpenRouter, DeepSeek, SiliconFlow, Volcengine Ark, etc.).
 
@@ -266,7 +267,7 @@ If ports are changed, you may also need:
 
 3. Mem0 extraction not running
 - `vk-memory status`
-- `cd deploy/local-stack && docker compose logs -f mem0 mem0-configurator`
+- `cd deploy/local-stack && docker compose logs -f mem0`
 
 4. Semantic recall is empty
 - Check qdrant/infinity containers
