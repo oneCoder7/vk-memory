@@ -280,7 +280,7 @@ export class SemanticVectorBridge {
     return out;
   }
 
-  async rerank(query: string, docs: SemanticRerankDoc[]): Promise<Map<string, number>> {
+  async rerank(query: string, docs: SemanticRerankDoc[], timeoutMs?: number): Promise<Map<string, number>> {
     if (docs.length === 0) {
       return new Map<string, number>();
     }
@@ -297,7 +297,9 @@ export class SemanticVectorBridge {
           top_n: docs.length,
         }),
       },
-      this.cfg.semanticTimeoutMs,
+      typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0
+        ? Math.floor(timeoutMs)
+        : this.cfg.semanticTimeoutMs,
     ).catch(() => null);
 
     if (!res?.ok || !res.body || typeof res.body !== "object") {
@@ -349,6 +351,15 @@ export class SemanticVectorBridge {
         },
       ],
     };
+    if (options.source === "memory" && Array.isArray(options.memoryCategories) && options.memoryCategories.length > 0) {
+      const categories = [...new Set(options.memoryCategories.map((v) => String(v).trim()).filter(Boolean))];
+      if (categories.length > 0) {
+        (filter.must as Array<Record<string, unknown>>).push({
+          key: "category",
+          match: { any: categories },
+        });
+      }
+    }
     if (options.excludeSessionId && options.source === "timeline") {
       filter.must_not = [
         {

@@ -789,7 +789,7 @@ async function preflightLocalStack(env, options = {}) {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            model: "BAAI/bge-reranker-v2-m3",
+            model: "BAAI/bge-reranker-base",
             query: "vk-memory warmup",
             documents: ["vk-memory warmup document"],
             top_n: 1,

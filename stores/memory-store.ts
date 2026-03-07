@@ -315,6 +315,11 @@ export class VikingLocalMemoryStore {
     return this.forgetById(id);
   }
 
+  async totalCount(): Promise<number> {
+    const index = await this.loadIndex();
+    return index.length;
+  }
+
   async stats(): Promise<Record<string, unknown>> {
     const index = await this.loadIndex();
     const byCategory = new Map<MemoryCategory, number>();

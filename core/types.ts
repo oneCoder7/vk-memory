@@ -119,6 +119,7 @@ export type SemanticRecallOptions = {
   source: SemanticKind;
   limit: number;
   excludeSessionId?: string;
+  memoryCategories?: MemoryCategory[];
 };
 
 export type ExtractedMemoryCandidate = {

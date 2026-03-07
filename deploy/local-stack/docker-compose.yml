@@ -80,7 +80,7 @@ services:
       - "--no-bettertransformer"
       - "--no-compile"
       - "--model-id"
-      - "BAAI/bge-reranker-v2-m3"
+      - "BAAI/bge-reranker-base"
       - "--port"
       - "7998"
     ports:

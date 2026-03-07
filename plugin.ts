@@ -8,6 +8,15 @@ import {
   PLUGIN_DESCRIPTION,
   PLUGIN_ID,
   PLUGIN_NAME,
+  RERANK_AMBIGUITY_MARGIN,
+  RERANK_BREAKER_COOLDOWN_MS,
+  RERANK_BREAKER_FAIL_THRESHOLD,
+  RERANK_MAX_DOCS,
+  RERANK_MEMORY_MIN_TOTAL,
+  RERANK_NEAR_TOP_COUNT,
+  RERANK_NEAR_TOP_MARGIN,
+  RERANK_SLOW_MS,
+  RERANK_TIMEOUT_MS,
 } from "./core/constants.js";
 import {
   extractLatestUserText,
@@ -18,7 +27,14 @@ import {
   sanitizeTextForMemory,
   truncate,
 } from "./core/utils.js";
-import type { MemoryIndexEntry, MemoryMatch, RecallOptions, TimelineMatch, TimelineRecallOptions } from "./core/types.js";
+import type {
+  MemoryCategory,
+  MemoryIndexEntry,
+  MemoryMatch,
+  RecallOptions,
+  TimelineMatch,
+  TimelineRecallOptions,
+} from "./core/types.js";
 import { Mem0ExtractorClient } from "./services/mem0-extractor-client.js";
 import { SemanticVectorBridge, applyRerankBlend, applySemanticScores } from "./services/semantic-vector-bridge.js";
 import { VikingLocalMemoryStore } from "./stores/memory-store.js";
@@ -68,32 +84,107 @@ const memoryPlugin = {
     const timelineStore = new VikingLocalTimelineStore(cfg);
     const mem0 = new Mem0ExtractorClient(cfg, serviceLogger);
     const semantic = new SemanticVectorBridge(cfg, serviceLogger);
-    const computeRerankLimit = (limit: number, candidateLimit: number): number =>
-      Math.max(limit, Math.min(candidateLimit, limit * 2));
+    type RerankMode = "never" | "adaptive" | "always";
+    const normalizeRerankMode = (raw: unknown): RerankMode => {
+      if (raw === "never" || raw === "always") {
+        return raw;
+      }
+      return "adaptive";
+    };
+    const computeAdaptiveRerankLimit = (limit: number, candidateCount: number): number =>
+      Math.max(2, Math.min(RERANK_MAX_DOCS, candidateCount, Math.max(2, limit)));
+    const parseCategoryFilters = (raw: unknown): MemoryCategory[] | undefined => {
+      if (typeof raw === "string" && raw.trim()) {
+        const normalized = raw.trim().toLowerCase();
+        if (
+          normalized === "preference" ||
+          normalized === "profile" ||
+          normalized === "fact" ||
+          normalized === "event" ||
+          normalized === "task"
+        ) {
+          return [normalized];
+        }
+      }
+      if (!Array.isArray(raw)) {
+        return undefined;
+      }
+      const categories = [...new Set(raw.map((item) => String(item ?? "").trim().toLowerCase()).filter(Boolean))]
+        .filter(
+          (item): item is MemoryCategory =>
+            item === "preference" || item === "profile" || item === "fact" || item === "event" || item === "task",
+        )
+        .slice(0, 5);
+      return categories.length > 0 ? categories : undefined;
+    };
+
+    const rerankBreaker = {
+      failures: 0,
+      openUntil: 0,
+    };
+    const getRerankBreakerState = (): { open: boolean; remainingMs: number } => {
+      const now = Date.now();
+      if (rerankBreaker.openUntil <= now) {
+        rerankBreaker.openUntil = 0;
+        return { open: false, remainingMs: 0 };
+      }
+      return { open: true, remainingMs: rerankBreaker.openUntil - now };
+    };
+    const recordRerankSuccess = (): void => {
+      rerankBreaker.failures = 0;
+      if (rerankBreaker.openUntil <= Date.now()) {
+        rerankBreaker.openUntil = 0;
+      }
+    };
+    const recordRerankFailure = (sessionId: string, scene: string, reason: string, elapsedMs: number): void => {
+      rerankBreaker.failures += 1;
+      if (rerankBreaker.failures < RERANK_BREAKER_FAIL_THRESHOLD) {
+        return;
+      }
+      rerankBreaker.failures = 0;
+      rerankBreaker.openUntil = Date.now() + RERANK_BREAKER_COOLDOWN_MS;
+      logWarn(
+        `rerank.breaker.open scene=${scene} reason=${reason} elapsedMs=${elapsedMs} cooldownMs=${RERANK_BREAKER_COOLDOWN_MS}`,
+        sessionId,
+      );
+    };
 
     const recallMemory = async (
       query: string,
       options: RecallOptions,
-      sessionId = "system",
-      scene = "unknown",
+      context?: {
+        sessionId?: string;
+        scene?: string;
+        rerankMode?: RerankMode;
+        memoryCategories?: MemoryCategory[];
+      },
     ): Promise<MemoryMatch[]> => {
+      const sessionId = context?.sessionId ?? "system";
+      const scene = context?.scene ?? "unknown";
+      const rerankMode = normalizeRerankMode(context?.rerankMode);
+      const memoryCategories = context?.memoryCategories;
       const startedAt = Date.now();
       try {
-        const candidateLimit = Math.max(options.limit, options.limit * cfg.semanticCandidateMultiplier);
+        const memoryTotal = await store.totalCount();
+        const rawCandidateLimit = Math.max(options.limit, options.limit * cfg.semanticCandidateMultiplier);
+        const candidateLimit =
+          memoryTotal > 0 ? Math.max(options.limit, Math.min(rawCandidateLimit, memoryTotal)) : rawCandidateLimit;
+        const semanticQuery = truncate(query, 800);
         logDebug(
-          `retrieve.memory.start scene=${scene} limit=${options.limit} threshold=${options.scoreThreshold} candidateLimit=${candidateLimit}`,
+          `retrieve.memory.start scene=${scene} limit=${options.limit} threshold=${options.scoreThreshold} candidateLimit=${candidateLimit} memoryTotal=${memoryTotal} rerankMode=${rerankMode} categories=${memoryCategories?.join("|") ?? ""} queryChars=${semanticQuery.length}`,
           sessionId,
         );
 
         const semanticStartedAt = Date.now();
-        const semanticHits = await semantic.search(query, {
+        const semanticHits = await semantic.search(semanticQuery, {
           source: "memory",
           limit: candidateLimit,
+          memoryCategories,
         });
         const semanticMs = Date.now() - semanticStartedAt;
         if (semanticHits.length === 0) {
           logDebug(
-            `retrieve.memory.done scene=${scene} elapsedMs=${Date.now() - startedAt} semanticMs=${semanticMs} loadMs=0 rerankMs=0 semanticHits=0 loaded=0 rerankDocs=0 result=0`,
+            `retrieve.memory.done scene=${scene} elapsedMs=${Date.now() - startedAt} semanticMs=${semanticMs} loadMs=0 rerankMs=0 semanticHits=0 loaded=0 eligible=0 rerankDocs=0 rerankDecision=skip rerankReason=no_semantic_hits result=0`,
             sessionId,
           );
           return [];
@@ -110,33 +201,71 @@ const memoryPlugin = {
         const loadMs = Date.now() - loadStartedAt;
         if (candidates.length === 0) {
           logDebug(
-            `retrieve.memory.done scene=${scene} elapsedMs=${Date.now() - startedAt} semanticMs=${semanticMs} loadMs=${loadMs} rerankMs=0 semanticHits=${semanticHits.length} loaded=0 rerankDocs=0 result=0`,
+            `retrieve.memory.done scene=${scene} elapsedMs=${Date.now() - startedAt} semanticMs=${semanticMs} loadMs=${loadMs} rerankMs=0 semanticHits=${semanticHits.length} loaded=0 eligible=0 rerankDocs=0 rerankDecision=skip rerankReason=no_loaded_candidates result=0`,
             sessionId,
           );
           return [];
         }
         candidates = applySemanticScores(candidates, semanticHits);
 
+        const semanticSorted = [...candidates].sort((a, b) => b.score - a.score);
+        const eligibleCount = semanticSorted.filter((item) => item.score >= options.scoreThreshold).length;
+        const top1 = semanticSorted[0]?.score ?? 0;
+        const top2 = semanticSorted[1]?.score ?? 0;
+        const topGap = top1 - top2;
+        const nearTopCount = semanticSorted.filter((item) => top1 - item.score <= RERANK_NEAR_TOP_MARGIN).length;
+        const breakerBefore = getRerankBreakerState();
+
         let rerankMs = 0;
         let rerankDocs = 0;
-        if (candidates.length > 1) {
-          const rerankLimit = computeRerankLimit(options.limit, candidateLimit);
-          rerankDocs = Math.min(candidates.length, rerankLimit);
-          const rerankInput = candidates
+        let rerankDecision = "skip";
+        let rerankReason = "not_needed";
+        if (rerankMode === "never") {
+          rerankReason = "disabled_by_mode";
+        } else if (semanticSorted.length <= 1) {
+          rerankReason = "insufficient_candidates";
+        } else if (breakerBefore.open) {
+          rerankReason = `breaker_open_${Math.ceil(breakerBefore.remainingMs / 1000)}s`;
+        } else if (rerankMode !== "always" && memoryTotal < RERANK_MEMORY_MIN_TOTAL) {
+          rerankReason = "corpus_below_min";
+        } else if (rerankMode !== "always" && eligibleCount <= options.limit) {
+          rerankReason = "threshold_already_sufficient";
+        } else if (
+          rerankMode !== "always" &&
+          topGap >= RERANK_AMBIGUITY_MARGIN &&
+          nearTopCount < RERANK_NEAR_TOP_COUNT
+        ) {
+          rerankReason = "not_ambiguous";
+        } else {
+          rerankDecision = "run";
+          const rerankLimit = computeAdaptiveRerankLimit(options.limit, semanticSorted.length);
+          rerankDocs = Math.min(semanticSorted.length, rerankLimit);
+          const rerankInput = semanticSorted
             .slice(0, rerankLimit)
             .map((item) => ({ id: item.uri, text: `${item.abstract}\n${item.overview}` }));
           const rerankStartedAt = Date.now();
-          const rerankScores = await semantic.rerank(query, rerankInput);
+          const rerankScores = await semantic.rerank(semanticQuery, rerankInput, RERANK_TIMEOUT_MS);
           rerankMs = Date.now() - rerankStartedAt;
           candidates = applyRerankBlend(candidates, rerankScores, cfg.semanticBlendWeight);
+          if (rerankMs >= RERANK_SLOW_MS || rerankScores.size === 0) {
+            rerankReason = rerankScores.size === 0 ? "empty_or_timeout" : "slow";
+            recordRerankFailure(sessionId, scene, rerankReason, rerankMs);
+          } else {
+            rerankReason = "ok";
+            recordRerankSuccess();
+          }
+        }
+        if (rerankDecision === "skip" && !breakerBefore.open) {
+          recordRerankSuccess();
         }
 
         const result = candidates
           .filter((item) => item.score >= options.scoreThreshold)
           .sort((a, b) => b.score - a.score)
           .slice(0, options.limit);
+        const breakerAfter = getRerankBreakerState();
         logDebug(
-          `retrieve.memory.done scene=${scene} elapsedMs=${Date.now() - startedAt} semanticMs=${semanticMs} loadMs=${loadMs} rerankMs=${rerankMs} semanticHits=${semanticHits.length} loaded=${candidates.length} rerankDocs=${rerankDocs} result=${result.length}`,
+          `retrieve.memory.done scene=${scene} elapsedMs=${Date.now() - startedAt} semanticMs=${semanticMs} loadMs=${loadMs} rerankMs=${rerankMs} semanticHits=${semanticHits.length} loaded=${candidates.length} eligible=${eligibleCount} rerankDocs=${rerankDocs} rerankDecision=${rerankDecision} rerankReason=${rerankReason} breakerOpen=${breakerAfter.open ? "yes" : "no"} result=${result.length}`,
           sessionId,
         );
         return result;
@@ -152,19 +281,27 @@ const memoryPlugin = {
     const recallTimeline = async (
       query: string,
       options: TimelineRecallOptions,
-      sessionId = "system",
-      scene = "unknown",
+      context?: {
+        sessionId?: string;
+        scene?: string;
+        rerankMode?: RerankMode;
+      },
     ): Promise<TimelineMatch[]> => {
+      const sessionId = context?.sessionId ?? "system";
+      const scene = context?.scene ?? "unknown";
+      const rerankMode = normalizeRerankMode(context?.rerankMode);
       const startedAt = Date.now();
       try {
+        const timelineTotal = await timelineStore.totalCount();
         const candidateLimit = Math.max(options.limit, options.limit * cfg.semanticCandidateMultiplier);
+        const semanticQuery = truncate(query, 800);
         logDebug(
-          `retrieve.timeline.start scene=${scene} limit=${options.limit} threshold=${options.scoreThreshold} candidateLimit=${candidateLimit} excludeSession=${options.excludeSessionId ?? ""}`,
+          `retrieve.timeline.start scene=${scene} limit=${options.limit} threshold=${options.scoreThreshold} candidateLimit=${candidateLimit} timelineTotal=${timelineTotal} rerankMode=${rerankMode} excludeSession=${options.excludeSessionId ?? ""} queryChars=${semanticQuery.length}`,
           sessionId,
         );
 
         const semanticStartedAt = Date.now();
-        const semanticHits = await semantic.search(query, {
+        const semanticHits = await semantic.search(semanticQuery, {
           source: "timeline",
           limit: candidateLimit,
           excludeSessionId: options.excludeSessionId,
@@ -172,7 +309,7 @@ const memoryPlugin = {
         const semanticMs = Date.now() - semanticStartedAt;
         if (semanticHits.length === 0) {
           logDebug(
-            `retrieve.timeline.done scene=${scene} elapsedMs=${Date.now() - startedAt} semanticMs=${semanticMs} loadMs=0 rerankMs=0 semanticHits=0 loaded=0 rerankDocs=0 result=0`,
+            `retrieve.timeline.done scene=${scene} elapsedMs=${Date.now() - startedAt} semanticMs=${semanticMs} loadMs=0 rerankMs=0 semanticHits=0 loaded=0 eligible=0 rerankDocs=0 rerankDecision=skip rerankReason=no_semantic_hits result=0`,
             sessionId,
           );
           return [];
@@ -190,33 +327,69 @@ const memoryPlugin = {
         const loadMs = Date.now() - loadStartedAt;
         if (candidates.length === 0) {
           logDebug(
-            `retrieve.timeline.done scene=${scene} elapsedMs=${Date.now() - startedAt} semanticMs=${semanticMs} loadMs=${loadMs} rerankMs=0 semanticHits=${semanticHits.length} loaded=0 rerankDocs=0 result=0`,
+            `retrieve.timeline.done scene=${scene} elapsedMs=${Date.now() - startedAt} semanticMs=${semanticMs} loadMs=${loadMs} rerankMs=0 semanticHits=${semanticHits.length} loaded=0 eligible=0 rerankDocs=0 rerankDecision=skip rerankReason=no_loaded_candidates result=0`,
             sessionId,
           );
           return [];
         }
         candidates = applySemanticScores(candidates, semanticHits);
 
+        const semanticSorted = [...candidates].sort((a, b) => b.score - a.score);
+        const eligibleCount = semanticSorted.filter((item) => item.score >= options.scoreThreshold).length;
+        const top1 = semanticSorted[0]?.score ?? 0;
+        const top2 = semanticSorted[1]?.score ?? 0;
+        const topGap = top1 - top2;
+        const nearTopCount = semanticSorted.filter((item) => top1 - item.score <= RERANK_NEAR_TOP_MARGIN).length;
+        const breakerBefore = getRerankBreakerState();
+
         let rerankMs = 0;
-        let rerankDocsCount = 0;
-        if (candidates.length > 1) {
-          const rerankLimit = computeRerankLimit(options.limit, candidateLimit);
-          rerankDocsCount = Math.min(candidates.length, rerankLimit);
-          const rerankDocs = candidates
+        let rerankDocs = 0;
+        let rerankDecision = "skip";
+        let rerankReason = "not_needed";
+        if (rerankMode === "never") {
+          rerankReason = "disabled_by_mode";
+        } else if (semanticSorted.length <= 1) {
+          rerankReason = "insufficient_candidates";
+        } else if (breakerBefore.open) {
+          rerankReason = `breaker_open_${Math.ceil(breakerBefore.remainingMs / 1000)}s`;
+        } else if (rerankMode !== "always" && eligibleCount <= options.limit) {
+          rerankReason = "threshold_already_sufficient";
+        } else if (
+          rerankMode !== "always" &&
+          topGap >= RERANK_AMBIGUITY_MARGIN &&
+          nearTopCount < RERANK_NEAR_TOP_COUNT
+        ) {
+          rerankReason = "not_ambiguous";
+        } else {
+          rerankDecision = "run";
+          const rerankLimit = computeAdaptiveRerankLimit(options.limit, semanticSorted.length);
+          rerankDocs = Math.min(semanticSorted.length, rerankLimit);
+          const rerankInput = semanticSorted
             .slice(0, rerankLimit)
             .map((item) => ({ id: item.uri, text: `${item.abstract}\n${item.overview}` }));
           const rerankStartedAt = Date.now();
-          const rerankScores = await semantic.rerank(query, rerankDocs);
+          const rerankScores = await semantic.rerank(semanticQuery, rerankInput, RERANK_TIMEOUT_MS);
           rerankMs = Date.now() - rerankStartedAt;
           candidates = applyRerankBlend(candidates, rerankScores, cfg.semanticBlendWeight);
+          if (rerankMs >= RERANK_SLOW_MS || rerankScores.size === 0) {
+            rerankReason = rerankScores.size === 0 ? "empty_or_timeout" : "slow";
+            recordRerankFailure(sessionId, scene, rerankReason, rerankMs);
+          } else {
+            rerankReason = "ok";
+            recordRerankSuccess();
+          }
+        }
+        if (rerankDecision === "skip" && !breakerBefore.open) {
+          recordRerankSuccess();
         }
 
         const result = candidates
           .filter((item) => item.score >= options.scoreThreshold)
           .sort((a, b) => b.score - a.score)
           .slice(0, options.limit);
+        const breakerAfter = getRerankBreakerState();
         logDebug(
-          `retrieve.timeline.done scene=${scene} elapsedMs=${Date.now() - startedAt} semanticMs=${semanticMs} loadMs=${loadMs} rerankMs=${rerankMs} semanticHits=${semanticHits.length} loaded=${candidates.length} rerankDocs=${rerankDocsCount} result=${result.length}`,
+          `retrieve.timeline.done scene=${scene} elapsedMs=${Date.now() - startedAt} semanticMs=${semanticMs} loadMs=${loadMs} rerankMs=${rerankMs} semanticHits=${semanticHits.length} loaded=${candidates.length} eligible=${eligibleCount} rerankDocs=${rerankDocs} rerankDecision=${rerankDecision} rerankReason=${rerankReason} breakerOpen=${breakerAfter.open ? "yes" : "no"} result=${result.length}`,
           sessionId,
         );
         return result;
@@ -243,6 +416,21 @@ const memoryPlugin = {
           detailChars: Type.Optional(Type.Number({ description: "Max chars for L2 snippets" })),
           source: Type.Optional(
             Type.Union([Type.Literal("hybrid"), Type.Literal("memory"), Type.Literal("timeline")]),
+          ),
+          categories: Type.Optional(
+            Type.Array(
+              Type.Union([
+                Type.Literal("preference"),
+                Type.Literal("profile"),
+                Type.Literal("fact"),
+                Type.Literal("event"),
+                Type.Literal("task"),
+              ]),
+              { minItems: 1, maxItems: 5 },
+            ),
+          ),
+          rerankMode: Type.Optional(
+            Type.Union([Type.Literal("adaptive"), Type.Literal("never"), Type.Literal("always")]),
           ),
           timelineLimit: Type.Optional(Type.Number({ description: "Timeline results limit" })),
           timelineScoreThreshold: Type.Optional(Type.Number({ description: "Timeline score threshold (0-1)" })),
@@ -283,9 +471,11 @@ const memoryPlugin = {
           const sourceRaw =
             typeof (params as { source?: string }).source === "string" ? (params as { source: string }).source : "hybrid";
           const source = sourceRaw === "memory" || sourceRaw === "timeline" ? sourceRaw : "hybrid";
+          const categories = parseCategoryFilters((params as { categories?: unknown }).categories);
+          const rerankMode = normalizeRerankMode((params as { rerankMode?: unknown }).rerankMode);
           const startedAt = Date.now();
           logDebug(
-            `memory_recall.start source=${source} limit=${limit} timelineLimit=${timelineLimit} includeDetails=${includeDetails} query="${truncate(query, 120)}"`,
+            `memory_recall.start source=${source} limit=${limit} timelineLimit=${timelineLimit} includeDetails=${includeDetails} rerankMode=${rerankMode} categories=${categories?.join("|") ?? ""} query="${truncate(query, 120)}"`,
             "tool",
           );
 
@@ -297,14 +487,23 @@ const memoryPlugin = {
               scoreThreshold,
               includeDetails,
               detailChars,
-            }, "tool", "tool_recall_memory");
+            }, {
+              sessionId: "tool",
+              scene: "tool_recall_memory",
+              rerankMode,
+              memoryCategories: categories,
+            });
           } else if (source === "timeline") {
             timelineMatches = await recallTimeline(query, {
               limit: timelineLimit,
               scoreThreshold: timelineScoreThreshold,
               includeDetails,
               detailChars,
-            }, "tool", "tool_recall_timeline");
+            }, {
+              sessionId: "tool",
+              scene: "tool_recall_timeline",
+              rerankMode,
+            });
           } else {
             [memoryMatches, timelineMatches] = await Promise.all([
               recallMemory(query, {
@@ -312,13 +511,22 @@ const memoryPlugin = {
                 scoreThreshold,
                 includeDetails,
                 detailChars,
-              }, "tool", "tool_recall_hybrid"),
+              }, {
+                sessionId: "tool",
+                scene: "tool_recall_hybrid",
+                rerankMode,
+                memoryCategories: categories,
+              }),
               recallTimeline(query, {
                 limit: timelineLimit,
                 scoreThreshold: timelineScoreThreshold,
                 includeDetails,
                 detailChars,
-              }, "tool", "tool_recall_hybrid"),
+              }, {
+                sessionId: "tool",
+                scene: "tool_recall_hybrid",
+                rerankMode,
+              }),
             ]);
           }
 
@@ -491,7 +699,11 @@ const memoryPlugin = {
             scoreThreshold: Math.max(0.01, cfg.recallScoreThreshold * 0.6),
             includeDetails: false,
             detailChars: cfg.detailChars,
-          }, "tool", "memory_forget_lookup");
+          }, {
+            sessionId: "tool",
+            scene: "memory_forget_lookup",
+            rerankMode: "adaptive",
+          });
 
           if (candidates.length === 0) {
             return {
@@ -566,7 +778,7 @@ const memoryPlugin = {
       try {
         const recallStartedAt = Date.now();
         logDebug(
-          `auto-recall.start query="${truncate(query, 120)}" memoryLimit=${cfg.recallLimit} timelineLimit=${cfg.timelineRecallLimit}`,
+          `auto-recall.start query="${truncate(query, 120)}" memoryLimit=${cfg.recallLimit} timelineLimit=${cfg.timelineRecallLimit} rerankMode=never`,
           sessionId,
         );
         const [memories, timeline] = await Promise.all([
@@ -575,14 +787,22 @@ const memoryPlugin = {
             scoreThreshold: cfg.recallScoreThreshold,
             includeDetails: false,
             detailChars: cfg.detailChars,
-          }, sessionId, "auto_recall"),
+          }, {
+            sessionId,
+            scene: "auto_recall",
+            rerankMode: "never",
+          }),
           recallTimeline(query, {
             limit: cfg.timelineRecallLimit,
             scoreThreshold: cfg.timelineScoreThreshold,
             includeDetails: false,
             detailChars: cfg.detailChars,
             excludeSessionId: sessionId,
-          }, sessionId, "auto_recall"),
+          }, {
+            sessionId,
+            scene: "auto_recall",
+            rerankMode: "never",
+          }),
         ]);
 
         if (memories.length === 0 && timeline.length === 0) {
@@ -754,7 +974,7 @@ const memoryPlugin = {
           logWarn(`first-run env config not found at ${cfg.envConfigPath}. Run interactive setup once: vk-memory setup`);
         }
         logInfo(
-          `initialized at ${cfg.rootDir} (roundCapture=always, recall=always, mem0=${cfg.mem0BaseUrl}, extractionWindow=chars>=${EXTRACTOR_MIN_PENDING_CHARS}/rounds>=${EXTRACTOR_MIN_PENDING_ROUNDS}|forceTurns>=${EXTRACTOR_FORCE_PENDING_TURNS}, debugLogs=${cfg.debugLogs ? "on" : "off"}, logs=${cfg.rootDir}/logs/sessions/<session>/<YYYY-MM-DD>.log)`,
+          `initialized at ${cfg.rootDir} (roundCapture=always, recall=always, mem0=${cfg.mem0BaseUrl}, extractionWindow=chars>=${EXTRACTOR_MIN_PENDING_CHARS}/rounds>=${EXTRACTOR_MIN_PENDING_ROUNDS}|forceTurns>=${EXTRACTOR_FORCE_PENDING_TURNS}, rerank=adaptive(maxDocs=${RERANK_MAX_DOCS},timeoutMs=${RERANK_TIMEOUT_MS},slowMs=${RERANK_SLOW_MS},breaker=${RERANK_BREAKER_FAIL_THRESHOLD}/${RERANK_BREAKER_COOLDOWN_MS}ms), debugLogs=${cfg.debugLogs ? "on" : "off"}, logs=${cfg.rootDir}/logs/sessions/<session>/<YYYY-MM-DD>.log)`,
         );
       },
       stop: async () => {

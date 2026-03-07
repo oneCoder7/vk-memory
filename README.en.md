@@ -249,16 +249,25 @@ If ports are changed, you may also need:
 2. Why recall both memory and timeline?
 - Timeline preserves fresh details; memory preserves stable facts. One channel alone loses signal.
 
-3. Why does `openclaw memory status` not match this plugin behavior?
+3. Can I filter by memory type?
+- Yes. `memory_recall` supports `categories` (`preference/profile/fact/event/task`).
+- The filter is applied at semantic retrieval stage before final ranking.
+
+4. Why does `openclaw memory status` not match this plugin behavior?
 - `openclaw memory` CLI reflects OpenClaw built-in memory indexing view, not necessarily your active memory-slot plugin data plane.
 - Trust `plugins.slots.memory` + plugin logs for slot-level behavior.
 
-4. Why did conversations become slower after enabling this plugin?
+5. Why did conversations become slower after enabling this plugin?
 - Each round runs hybrid auto-recall in `before_agent_start` (embedding + qdrant + rerank across memory/timeline).
 - If the agent also calls `memory_recall`, that adds another recall pass (newer code parallelizes recall and caps rerank candidates).
 - Tune first: `semanticCandidateMultiplier` (recommend 2-3), `recallLimit`, `timelineRecallLimit`.
+- Current local-first defaults (latency oriented):
+  - `auto-recall` uses `rerankMode=never` by default
+  - Skip rerank when memory corpus is `<100`
+  - Skip rerank when thresholded results are already sufficient and not ambiguous
+  - Rerank max docs = 4, timeout = 1500ms, breaker opens after 3 slow/empty runs for 60s
 
-5. How to enable verbose logs?
+6. How to enable verbose logs?
 - `vk-memory config --advanced`
 - Set `debugLogs = y`
 - Restart `openclaw gateway`

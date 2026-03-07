@@ -268,6 +268,11 @@ vk-memory uninstall
 
 - timeline 保近期细节，memory 保长期事实，只用一条路都会丢信息。
 
+1. 可以按记忆类型过滤吗？
+
+- 可以。`memory_recall` 支持 `categories`（`preference/profile/fact/event/task`）。
+- 这会在语义检索阶段先过滤，再做后续排序。
+
 1. `openclaw memory status` 为什么和这个插件表现不一致？
 
 - `openclaw memory` CLI 是 OpenClaw 内置 memory 管理视图，不等同于你当前 memory slot 插件的数据面。
@@ -278,6 +283,11 @@ vk-memory uninstall
 - 每轮 `before_agent_start` 都会做一次混合召回（embedding + qdrant + rerank，memory/timeline 两路）。
 - 如果 Agent 再主动调用 `memory_recall`，会多一轮召回（新版本已做并行与 rerank 候选上限优化）。
 - 可优先调小：`semanticCandidateMultiplier`（建议 2~3）、`recallLimit`、`timelineRecallLimit`。
+- 当前本地默认策略（降时延）：
+  - `auto-recall` 默认 `rerankMode=never`
+  - memory 总量 `<100` 时跳过 rerank
+  - 命中已足够且不歧义时跳过 rerank
+  - rerank 仅取最多 4 条，超时 1500ms，慢/空结果触发熔断（3 次后冷却 60s）
 
 1. 如何开详细日志排查？
 

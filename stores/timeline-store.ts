@@ -548,6 +548,11 @@ export class VikingLocalTimelineStore {
     return rows;
   }
 
+  async totalCount(): Promise<number> {
+    const index = await this.loadIndex();
+    return index.length;
+  }
+
   async stats(): Promise<Record<string, unknown>> {
     const index = await this.loadIndex();
     const byRole = new Map<string, number>();
