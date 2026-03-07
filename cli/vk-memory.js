@@ -373,7 +373,7 @@ function printHelp() {
       "Options:",
       "  --yes            Non-interactive defaults (for setup/config)",
       "  --basic          Basic mode for plugin config setup",
-      "  --advanced       Advanced mode for plugin config setup",
+      "  --advanced       Advanced mode (plugin config + stack ports/temperature prompts)",
       "  --config=<path>  Custom plugin env JSON path (for setup/config)",
       "  --workspace=<p>  OpenClaw workspace path (for migrate)",
       "  --root=<path>    Viking memory root dir (for migrate)",
@@ -477,6 +477,7 @@ async function askLine(rl, label, fallback) {
 
 async function ensureStackEnv(args) {
   const yesMode = args.includes("--yes") || args.includes("-y");
+  const advancedMode = args.includes("--advanced");
 
   if (!existsSync(STACK_ENV_EXAMPLE_PATH)) {
     throw new Error(`Stack env template not found: ${STACK_ENV_EXAMPLE_PATH}`);
@@ -511,15 +512,22 @@ async function ensureStackEnv(args) {
 
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    process.stdout.write("\nConfigure Mem0 LLM and local ports\n");
+    process.stdout.write("\nConfigure Mem0 LLM\n");
+    if (advancedMode) {
+      process.stdout.write("Advanced mode: include temperature and host ports.\n");
+    } else {
+      process.stdout.write("Basic mode: only required LLM fields. Use --advanced to tune ports.\n");
+    }
     values.MEM0_LLM_API_KEY = await askLine(rl, "MEM0_LLM_API_KEY", values.MEM0_LLM_API_KEY);
     values.MEM0_LLM_BASE_URL = await askLine(rl, "MEM0_LLM_BASE_URL", values.MEM0_LLM_BASE_URL);
     values.MEM0_LLM_MODEL = await askLine(rl, "MEM0_LLM_MODEL", values.MEM0_LLM_MODEL);
-    values.MEM0_LLM_TEMPERATURE = await askLine(rl, "MEM0_LLM_TEMPERATURE", values.MEM0_LLM_TEMPERATURE);
-    values.HOST_MEM0_PORT = await askLine(rl, "HOST_MEM0_PORT", values.HOST_MEM0_PORT);
-    values.HOST_QDRANT_PORT = await askLine(rl, "HOST_QDRANT_PORT", values.HOST_QDRANT_PORT);
-    values.HOST_EMBEDDING_PORT = await askLine(rl, "HOST_EMBEDDING_PORT", values.HOST_EMBEDDING_PORT);
-    values.HOST_RERANK_PORT = await askLine(rl, "HOST_RERANK_PORT", values.HOST_RERANK_PORT);
+    if (advancedMode) {
+      values.MEM0_LLM_TEMPERATURE = await askLine(rl, "MEM0_LLM_TEMPERATURE", values.MEM0_LLM_TEMPERATURE);
+      values.HOST_MEM0_PORT = await askLine(rl, "HOST_MEM0_PORT", values.HOST_MEM0_PORT);
+      values.HOST_QDRANT_PORT = await askLine(rl, "HOST_QDRANT_PORT", values.HOST_QDRANT_PORT);
+      values.HOST_EMBEDDING_PORT = await askLine(rl, "HOST_EMBEDDING_PORT", values.HOST_EMBEDDING_PORT);
+      values.HOST_RERANK_PORT = await askLine(rl, "HOST_RERANK_PORT", values.HOST_RERANK_PORT);
+    }
   } finally {
     rl.close();
   }
@@ -560,8 +568,7 @@ async function cmdSetup(args) {
 }
 
 async function cmdConfig(args) {
-  const setupArgs = args.includes("--advanced") || args.includes("--basic") ? args : [...args, "--advanced"];
-  await setupPluginConfig(setupArgs);
+  await setupPluginConfig(args);
   await ensureStackEnv(args);
   process.stdout.write("[OK] vk-memory config completed.\n");
 }
