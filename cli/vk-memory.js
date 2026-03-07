@@ -779,9 +779,7 @@ async function cmdMigrate(args) {
   await writeJsonFile(indexPath, mergedIndex);
 
   process.stdout.write(`[OK] Migration completed. Imported ${newEntries.length} memories.\n`);
-  process.stdout.write(
-    "Only local OpenClaw file memory was imported (MEMORY.md + memory/*.md). context-store is not supported.\n",
-  );
+  process.stdout.write("Imported local OpenClaw file memory sources: MEMORY.md + memory/*.md.\n");
 }
 
 async function cmdUninstall(args) {
