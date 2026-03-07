@@ -74,6 +74,7 @@ vk-memory help
 | `vk-memory stop` | Stop local memory stack |
 | `vk-memory status` | Show stack status |
 | `vk-memory migrate` | Import existing OpenClaw local file memory |
+| `vk-memory uninstall` | Remove memory-viking-local config, extension directory, and global `vk-memory` command (keep `~/.viking-memory`) |
 
 ## 3. Migrate Existing OpenClaw Memory (Local File Mode)
 
@@ -104,6 +105,12 @@ Constraint:
 After migration:
 1. Migrated records are written into `~/.viking-memory/memories/*` and `index/catalog.json`
 2. When plugin starts, semantic backfill upserts these records into local Qdrant automatically
+
+Uninstall plugin config + extension directory + global command (keep memory files):
+
+```bash
+vk-memory uninstall
+```
 
 ## 4. Memory vs Timeline
 

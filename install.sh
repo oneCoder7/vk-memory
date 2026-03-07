@@ -28,6 +28,43 @@ set_config_silent() {
   fi
 }
 
+ensure_local_bin_on_path() {
+  if [[ ":${PATH}:" == *":${LOCAL_BIN_DIR}:"* ]]; then
+    return
+  fi
+
+  local shell_name
+  shell_name="$(basename "${SHELL:-}")"
+  local rc_file=""
+  case "${shell_name}" in
+    zsh)
+      rc_file="${HOME_DIR}/.zshrc"
+      ;;
+    bash)
+      rc_file="${HOME_DIR}/.bashrc"
+      ;;
+    *)
+      rc_file="${HOME_DIR}/.profile"
+      ;;
+  esac
+
+  local marker_start="# >>> vk-memory PATH >>>"
+  local marker_end="# <<< vk-memory PATH <<<"
+
+  touch "${rc_file}"
+  if ! grep -Fq "${marker_start}" "${rc_file}"; then
+    {
+      echo ""
+      echo "${marker_start}"
+      echo "export PATH=\"${LOCAL_BIN_DIR}:\$PATH\""
+      echo "${marker_end}"
+    } >>"${rc_file}"
+    echo "[INFO] Added ${LOCAL_BIN_DIR} to PATH in ${rc_file}"
+  fi
+
+  export PATH="${LOCAL_BIN_DIR}:${PATH}"
+}
+
 echo "[INFO] Installing ${PLUGIN_ID} to ${PLUGIN_DEST}"
 mkdir -p "${PLUGIN_DEST}"
 
@@ -82,6 +119,7 @@ set -euo pipefail
 node "${PLUGIN_DEST}/cli/vk-memory.js" "\$@"
 EOF
 chmod +x "${VK_MEMORY_WRAPPER}"
+ensure_local_bin_on_path
 
 echo "[INFO] Stopping OpenClaw gateway if running"
 openclaw gateway stop >/dev/null 2>&1 || true
@@ -91,17 +129,12 @@ set_config_silent plugins.enabled true
 set_config_silent plugins.slots.memory "${PLUGIN_ID}"
 set_config_silent "plugins.entries.${PLUGIN_ID}.config" '{"envConfigPath":"~/.viking-memory/plugin.env.json"}'
 
-if [[ ":${PATH}:" != *":${LOCAL_BIN_DIR}:"* ]]; then
-  echo "[WARN] ${LOCAL_BIN_DIR} is not in PATH."
-  echo "[WARN] Add this line to your shell profile:"
-  echo "       export PATH=\"${LOCAL_BIN_DIR}:\$PATH\""
-fi
-
 echo "[OK] Install completed."
 echo "[INFO] Use vk-memory commands:"
-echo "       vk-memory setup | config | start | stop | status"
+echo "       vk-memory setup | config | start | stop | status | migrate | uninstall"
 echo "[INFO] First run: vk-memory setup && vk-memory start"
 echo "[INFO] OpenClaw gateway was not auto-started."
 echo "[INFO] Please start/restart OpenClaw manually:"
 echo "       openclaw gateway"
 echo "       # or service mode: openclaw gateway restart"
+echo "[INFO] If your current shell still cannot find vk-memory, reopen terminal once."

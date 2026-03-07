@@ -77,6 +77,34 @@ $VkMemoryWrapper = Join-Path $LocalBinDir "vk-memory.cmd"
 $wrapperBody = "@echo off`r`nnode `"$PluginDest\\cli\\vk-memory.js`" %*`r`n"
 Set-Content -Path $VkMemoryWrapper -Value $wrapperBody -Encoding ASCII
 
+$currentUserPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
+$pathEntries = @()
+if (-not [string]::IsNullOrWhiteSpace($currentUserPath)) {
+  $pathEntries = $currentUserPath.Split(";") | Where-Object { $_ -and $_.Trim() -ne "" }
+}
+
+$hasLocalBin = $false
+foreach ($entry in $pathEntries) {
+  if ($entry.TrimEnd("\") -ieq $LocalBinDir.TrimEnd("\")) {
+    $hasLocalBin = $true
+    break
+  }
+}
+
+if (-not $hasLocalBin) {
+  $newUserPath = if ([string]::IsNullOrWhiteSpace($currentUserPath)) {
+    $LocalBinDir
+  } else {
+    "$LocalBinDir;$currentUserPath"
+  }
+  [System.Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
+  Write-Host "[INFO] Added $LocalBinDir to user PATH."
+}
+
+if (-not (($env:PATH + ";").ToLower().Contains(($LocalBinDir + ";").ToLower()))) {
+  $env:PATH = "$LocalBinDir;$env:PATH"
+}
+
 Write-Host "[INFO] Stopping OpenClaw gateway if running"
 try {
   openclaw gateway stop *> $null
@@ -88,16 +116,12 @@ Set-OpenClawConfigSilent -Key "plugins.enabled" -Value "true"
 Set-OpenClawConfigSilent -Key "plugins.slots.memory" -Value $PluginId
 Set-OpenClawConfigSilent -Key "plugins.entries.$PluginId.config" -Value '{"envConfigPath":"~/.viking-memory/plugin.env.json"}'
 
-if (-not (($env:PATH + ";").ToLower().Contains(($LocalBinDir + ";").ToLower()))) {
-  Write-Host "[WARN] $LocalBinDir is not in PATH."
-  Write-Host "[WARN] Add it to your user PATH so vk-memory can be called globally."
-}
-
 Write-Host "[OK] Install completed."
 Write-Host "[INFO] Use vk-memory commands:"
-Write-Host "       vk-memory setup | config | start | stop | status"
+Write-Host "       vk-memory setup | config | start | stop | status | migrate | uninstall"
 Write-Host "[INFO] First run: vk-memory setup && vk-memory start"
 Write-Host "[INFO] OpenClaw gateway was not auto-started."
 Write-Host "[INFO] Please start/restart OpenClaw manually:"
 Write-Host "       openclaw gateway"
 Write-Host "       # or service mode: openclaw gateway restart"
+Write-Host "[INFO] If current terminal still cannot find vk-memory, reopen terminal once."

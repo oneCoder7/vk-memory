@@ -63,7 +63,7 @@ openclaw config get plugins.slots.memory
 # 期望: memory-viking-local
 ```
 
-## 2. 全局命令（你只需要记住这 6 个）
+## 2. 全局命令（你只需要记住这 7 个）
 
 ```bash
 vk-memory help
@@ -78,6 +78,7 @@ vk-memory help
 | `vk-memory stop`    | 停止本地记忆栈                            |
 | `vk-memory status`  | 查看容器状态                             |
 | `vk-memory migrate` | 迁移已有 OpenClaw 本地文件记忆               |
+| `vk-memory uninstall` | 从 OpenClaw 移除 memory-viking-local 配置、扩展目录和全局 `vk-memory` 命令（保留 `~/.viking-memory`） |
 
 
 ## 3. 旧记忆迁移（仅本地文件模式）
@@ -113,6 +114,12 @@ vk-memory migrate --root=~/.viking-memory
 
 1. 数据写入 `~/.viking-memory/memories/*` 和 `index/catalog.json`
 2. 插件启动时会自动做语义回填，把迁移数据写入本地 Qdrant
+
+卸载插件配置 + 扩展目录 + 全局命令（不删记忆文件）：
+
+```bash
+vk-memory uninstall
+```
 
 ## 4. memory 和 timeline 到底有什么区别
 

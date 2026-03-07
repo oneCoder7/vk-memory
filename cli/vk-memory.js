@@ -2,7 +2,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -14,11 +14,17 @@ const SETUP_HELPER_PATH = join(ROOT_DIR, "setup-helper", "cli.js");
 const STACK_DIR = join(ROOT_DIR, "deploy", "local-stack");
 const STACK_ENV_EXAMPLE_PATH = join(STACK_DIR, ".env.example");
 const STACK_ENV_PATH = join(STACK_DIR, ".env");
+const OPENCLAW_CONFIG_PATH = resolve(homedir(), ".openclaw", "openclaw.json");
 const DEFAULT_PLUGIN_ENV_CONFIG_PATH = resolve(homedir(), ".viking-memory", "plugin.env.json");
 const DEFAULT_ROOT_DIR = resolve(homedir(), ".viking-memory");
 const DEFAULT_WORKSPACE_DIR = resolve(homedir(), ".openclaw", "workspace");
 const DEFAULT_TARGET_URI = "viking://user/memories";
 const DEFAULT_CHUNK_CHARS = 1200;
+const PLUGIN_ID = "memory-viking-local";
+const LOCAL_BIN_DIR = resolve(homedir(), ".local", "bin");
+const GLOBAL_WRAPPER_PATH = join(LOCAL_BIN_DIR, "vk-memory");
+const GLOBAL_WRAPPER_CMD_PATH = join(LOCAL_BIN_DIR, "vk-memory.cmd");
+const LEGACY_GLOBAL_WRAPPER_PATH = join(homedir(), "bin", "vk-memory");
 
 const STACK_DEFAULTS = {
   MEM0_LLM_API_KEY: "",
@@ -34,6 +40,10 @@ const STACK_DEFAULTS = {
 
 function resolveUserPath(rawPath) {
   return resolve(String(rawPath).replace(/^~(?=$|\/|\\)/, homedir()));
+}
+
+function isObjectRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function ensureInsideVikingBase(candidatePath, label) {
@@ -357,6 +367,7 @@ function printHelp() {
       "  stop             Stop local memory stack (docker compose down)",
       "  status           Show local memory stack status (docker compose ps)",
       "  migrate          Import existing OpenClaw local file memory",
+      "  uninstall        Remove memory-viking-local config, extension files, and global vk-memory command",
       "  help             Show this help",
       "",
       "Options:",
@@ -367,7 +378,8 @@ function printHelp() {
       "  --workspace=<p>  OpenClaw workspace path (for migrate)",
       "  --root=<path>    Viking memory root dir (for migrate)",
       "  --chunk-chars=n  Max chars per migrated chunk (for migrate)",
-      "  --dry-run        Show migrate result without writing files",
+      "  --openclaw-config=<path>  Custom OpenClaw config JSON path (for uninstall)",
+      "  --dry-run        Show result without writing files (migrate/uninstall)",
       "",
       "Examples:",
       "  vk-memory setup",
@@ -376,6 +388,8 @@ function printHelp() {
       "  vk-memory stop",
       "  vk-memory migrate",
       "  vk-memory migrate --workspace=~/.openclaw/workspace --dry-run",
+      "  vk-memory uninstall",
+      "  vk-memory uninstall --dry-run",
     ].join("\n") + "\n",
   );
 }
@@ -719,6 +733,114 @@ async function cmdMigrate(args) {
   );
 }
 
+async function cmdUninstall(args) {
+  const openclawConfigRaw = getOptionValue(args, "--openclaw-config", OPENCLAW_CONFIG_PATH);
+  const configPath = resolveUserPath(openclawConfigRaw);
+  const openclawDir = dirname(configPath);
+  const extensionDirPath = join(openclawDir, "extensions", PLUGIN_ID);
+  const dryRun = hasOption(args, "--dry-run");
+  const wrapperCandidates = [GLOBAL_WRAPPER_PATH, GLOBAL_WRAPPER_CMD_PATH, LEGACY_GLOBAL_WRAPPER_PATH];
+  const wrappersToRemove = wrapperCandidates.filter((path) => existsSync(path));
+  const extensionDirExists = existsSync(extensionDirPath);
+
+  let configFound = false;
+  let root = null;
+  let removedSlot = false;
+  let removedEntry = false;
+  let removedInstall = false;
+
+  if (existsSync(configPath)) {
+    configFound = true;
+    const raw = await readFile(configPath, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (!isObjectRecord(parsed)) {
+      throw new Error(`Invalid OpenClaw config JSON object: ${configPath}`);
+    }
+
+    root = parsed;
+    const plugins = isObjectRecord(root.plugins) ? root.plugins : null;
+    if (plugins) {
+      const slots = isObjectRecord(plugins.slots) ? plugins.slots : null;
+      const entries = isObjectRecord(plugins.entries) ? plugins.entries : null;
+      const installs = isObjectRecord(plugins.installs) ? plugins.installs : null;
+
+      if (slots && slots.memory === PLUGIN_ID) {
+        delete slots.memory;
+        removedSlot = true;
+        if (Object.keys(slots).length === 0) {
+          delete plugins.slots;
+        }
+      }
+
+      if (entries && Object.prototype.hasOwnProperty.call(entries, PLUGIN_ID)) {
+        delete entries[PLUGIN_ID];
+        removedEntry = true;
+        if (Object.keys(entries).length === 0) {
+          delete plugins.entries;
+        }
+      }
+
+      if (installs && Object.prototype.hasOwnProperty.call(installs, PLUGIN_ID)) {
+        delete installs[PLUGIN_ID];
+        removedInstall = true;
+        if (Object.keys(installs).length === 0) {
+          delete plugins.installs;
+        }
+      }
+    }
+  }
+
+  process.stdout.write(`OpenClaw config: ${configPath}\n`);
+  process.stdout.write(`Config file exists: ${configFound ? "yes" : "no"}\n`);
+  process.stdout.write(`Remove plugins.slots.memory: ${removedSlot ? "yes" : "no"}\n`);
+  process.stdout.write(`Remove plugins.entries.${PLUGIN_ID}: ${removedEntry ? "yes" : "no"}\n`);
+  process.stdout.write(`Remove plugins.installs.${PLUGIN_ID}: ${removedInstall ? "yes" : "no"}\n`);
+  process.stdout.write(`Remove extension directory: ${extensionDirExists ? "yes" : "no"}\n`);
+  if (extensionDirExists) {
+    process.stdout.write(`  - ${extensionDirPath}\n`);
+  }
+  process.stdout.write(`Remove global vk-memory command files: ${wrappersToRemove.length}\n`);
+  for (const path of wrappersToRemove) {
+    process.stdout.write(`  - ${path}\n`);
+  }
+
+  if (!configFound && !extensionDirExists && wrappersToRemove.length === 0) {
+    process.stdout.write("[WARN] Nothing to uninstall.\n");
+    return;
+  }
+
+  if (dryRun) {
+    process.stdout.write("[OK] Dry run complete, no files were changed.\n");
+    return;
+  }
+
+  if (configFound && root && (removedSlot || removedEntry || removedInstall)) {
+    await writeFile(configPath, `${JSON.stringify(root, null, 2)}\n`, "utf-8");
+    process.stdout.write("[OK] Removed memory-viking-local from OpenClaw config.\n");
+  } else if (configFound) {
+    process.stdout.write("[INFO] No memory-viking-local entries found in OpenClaw config.\n");
+  }
+
+  if (extensionDirExists) {
+    await rm(extensionDirPath, { recursive: true, force: true });
+    process.stdout.write("[OK] Removed memory-viking-local extension directory.\n");
+  } else {
+    process.stdout.write("[INFO] No memory-viking-local extension directory found.\n");
+  }
+
+  for (const path of wrappersToRemove) {
+    await rm(path, { force: true });
+  }
+  if (wrappersToRemove.length > 0) {
+    process.stdout.write("[OK] Removed global vk-memory command file(s).\n");
+  } else {
+    process.stdout.write("[INFO] No global vk-memory command file found.\n");
+  }
+
+  process.stdout.write("[OK] Local memory data under ~/.viking-memory was preserved.\n");
+  process.stdout.write("[INFO] Restart OpenClaw manually to apply: openclaw gateway\n");
+}
+
 async function main() {
   const [command = "help", ...args] = process.argv.slice(2);
 
@@ -748,6 +870,10 @@ async function main() {
   }
   if (command === "migrate") {
     await cmdMigrate(args);
+    return;
+  }
+  if (command === "uninstall") {
+    await cmdUninstall(args);
     return;
   }
 
