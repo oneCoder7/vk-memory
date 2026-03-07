@@ -17,6 +17,17 @@ if ! command -v npm >/dev/null 2>&1; then
   exit 1
 fi
 
+set_config_silent() {
+  local key="$1"
+  local value="$2"
+  local output
+  if ! output="$(openclaw config set "${key}" "${value}" 2>&1)"; then
+    echo "[ERROR] openclaw config set failed: ${key}=${value}"
+    echo "${output}"
+    exit 1
+  fi
+}
+
 echo "[INFO] Installing ${PLUGIN_ID} to ${PLUGIN_DEST}"
 mkdir -p "${PLUGIN_DEST}"
 
@@ -72,15 +83,13 @@ node "${PLUGIN_DEST}/cli/vk-memory.js" "\$@"
 EOF
 chmod +x "${VK_MEMORY_WRAPPER}"
 
+echo "[INFO] Stopping OpenClaw gateway if running"
+openclaw gateway stop >/dev/null 2>&1 || true
+
 echo "[INFO] Configuring OpenClaw memory slot"
-openclaw config set plugins.enabled true
-openclaw config set plugins.slots.memory "${PLUGIN_ID}"
-openclaw config set "plugins.entries.${PLUGIN_ID}.config.envConfigPath" "~/.viking-memory/plugin.env.json"
-openclaw config set "plugins.entries.${PLUGIN_ID}.config.rootDir" "~/.viking-memory"
-openclaw config set "plugins.entries.${PLUGIN_ID}.config.recallLimit" 6
-openclaw config set "plugins.entries.${PLUGIN_ID}.config.recallScoreThreshold" 0.12
-openclaw config set "plugins.entries.${PLUGIN_ID}.config.timelineRecallLimit" 4
-openclaw config set "plugins.entries.${PLUGIN_ID}.config.timelineScoreThreshold" 0.08
+set_config_silent plugins.enabled true
+set_config_silent plugins.slots.memory "${PLUGIN_ID}"
+set_config_silent "plugins.entries.${PLUGIN_ID}.config" '{"envConfigPath":"~/.viking-memory/plugin.env.json"}'
 
 if [[ ":${PATH}:" != *":${LOCAL_BIN_DIR}:"* ]]; then
   echo "[WARN] ${LOCAL_BIN_DIR} is not in PATH."
@@ -92,4 +101,7 @@ echo "[OK] Install completed."
 echo "[INFO] Use vk-memory commands:"
 echo "       vk-memory setup | config | start | stop | status"
 echo "[INFO] First run: vk-memory setup && vk-memory start"
-echo "[INFO] Then run: openclaw gateway"
+echo "[INFO] OpenClaw gateway was not auto-started."
+echo "[INFO] Please start/restart OpenClaw manually:"
+echo "       openclaw gateway"
+echo "       # or service mode: openclaw gateway restart"
