@@ -75,7 +75,7 @@ vk-memory help
 | ------------------- | ---------------------------------- |
 | `vk-memory setup`   | 首次初始化（插件配置 JSON + Docker 栈 `.env`） |
 | `vk-memory config`  | 修改已有配置（包括 `debugLogs`）             |
-| `vk-memory start`   | 启动本地记忆栈（docker compose up -d）      |
+| `vk-memory start`   | 启动本地记忆栈并自动做就绪/连通性预检（默认包含 Mem0 LLM 预检） |
 | `vk-memory stop`    | 停止本地记忆栈                            |
 | `vk-memory status`  | 查看容器状态                             |
 | `vk-memory migrate` | 迁移已有 OpenClaw 本地文件记忆               |
@@ -292,11 +292,15 @@ vk-memory uninstall
 
 - `vk-memory status`
 - `cd deploy/local-stack && docker compose logs -f mem0`
+- 若日志含 `url.not_found` 或 `/chat/completions`：
+  - 说明当前 `MEM0_LLM_BASE_URL` / `MEM0_LLM_MODEL` 对不上
+  - 先执行 `vk-memory config` 修正，再执行 `vk-memory start`（会自动预检）
 
 1. 语义召回为空
 
 - 确认 qdrant / infinity 容器都在运行
 - 若改端口，确认 `VIKING_MEMORY_*` 同步
+- 冷启动阶段若看到 `embedding endpoint error`，通常是模型正在加载；新版 `vk-memory start` 会先等待预热完成再返回
 
 ## 13. 无全局命令时兜底
 

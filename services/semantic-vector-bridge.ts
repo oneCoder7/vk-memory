@@ -1,4 +1,5 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import { createHash } from "node:crypto";
 import type { MemoryLocalVikingConfig } from "../config.js";
 import {
   SEMANTIC_EMBEDDING_BASE_URL,
@@ -52,6 +53,14 @@ export class SemanticVectorBridge {
     return headers;
   }
 
+  private pointIdForUri(uri: string): string {
+    const hex = createHash("sha256").update(uri).digest("hex");
+    const v3 = `5${hex.slice(13, 16)}`;
+    const variant = ((Number.parseInt(hex[16] || "8", 16) & 0x3) | 0x8).toString(16);
+    const v4 = `${variant}${hex.slice(17, 20)}`;
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${v3}-${v4}-${hex.slice(20, 32)}`;
+  }
+
   private async fetchJson(
     url: string,
     init: RequestInit,
@@ -77,6 +86,10 @@ export class SemanticVectorBridge {
     }
   }
 
+  private async sleep(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   private warnUnavailable(reason: string): void {
     if (this.warnedUnavailable) {
       return;
@@ -87,6 +100,30 @@ export class SemanticVectorBridge {
     );
   }
 
+  private extractCollectionVectorSize(body: unknown): number | null {
+    if (!body || typeof body !== "object") {
+      return null;
+    }
+    const result = (body as Record<string, unknown>).result;
+    if (!result || typeof result !== "object") {
+      return null;
+    }
+    const config = (result as Record<string, unknown>).config;
+    if (!config || typeof config !== "object") {
+      return null;
+    }
+    const params = (config as Record<string, unknown>).params;
+    if (!params || typeof params !== "object") {
+      return null;
+    }
+    const vectors = (params as Record<string, unknown>).vectors;
+    if (!vectors || typeof vectors !== "object") {
+      return null;
+    }
+    const size = (vectors as Record<string, unknown>).size;
+    return typeof size === "number" && Number.isFinite(size) && size > 0 ? Math.floor(size) : null;
+  }
+
   private async embed(text: string): Promise<number[] | null> {
     const payload = {
       model: this.cfg.semanticEmbeddingModel,
@@ -94,52 +131,67 @@ export class SemanticVectorBridge {
     };
 
     const endpointA = `${SEMANTIC_EMBEDDING_BASE_URL}/embeddings`;
-    const a = await this.fetchJson(
-      endpointA,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      },
-      this.cfg.semanticTimeoutMs,
-    ).catch(() => null);
-
-    if (a?.ok && a.body && typeof a.body === "object") {
-      const body = a.body as Record<string, unknown>;
-      const data = Array.isArray(body.data) ? body.data : [];
-      const first = data[0] as Record<string, unknown> | undefined;
-      const embedding = Array.isArray(first?.embedding) ? first.embedding : [];
-      const vector = embedding
-        .map((v) => (typeof v === "number" && Number.isFinite(v) ? v : null))
-        .filter((v): v is number => v !== null);
-      if (vector.length > 0) {
-        return vector;
-      }
-    }
-
     const endpointB = `${SEMANTIC_EMBEDDING_BASE_URL}/api/embed`;
-    const b = await this.fetchJson(
-      endpointB,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      },
-      this.cfg.semanticTimeoutMs,
-    ).catch(() => null);
+    let lastErrorSummary = "";
 
-    if (b?.ok && b.body && typeof b.body === "object") {
-      const body = b.body as Record<string, unknown>;
-      const embeddings = Array.isArray(body.embeddings) ? body.embeddings : [];
-      const first = Array.isArray(embeddings[0]) ? embeddings[0] : [];
-      const vector = first
-        .map((v) => (typeof v === "number" && Number.isFinite(v) ? v : null))
-        .filter((v): v is number => v !== null);
-      if (vector.length > 0) {
-        return vector;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const a = await this.fetchJson(
+        endpointA,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        },
+        this.cfg.semanticTimeoutMs,
+      ).catch(() => null);
+
+      if (a?.ok && a.body && typeof a.body === "object") {
+        const body = a.body as Record<string, unknown>;
+        const data = Array.isArray(body.data) ? body.data : [];
+        const first = data[0] as Record<string, unknown> | undefined;
+        const embedding = Array.isArray(first?.embedding) ? first.embedding : [];
+        const vector = embedding
+          .map((v) => (typeof v === "number" && Number.isFinite(v) ? v : null))
+          .filter((v): v is number => v !== null);
+        if (vector.length > 0) {
+          return vector;
+        }
+      } else if (a) {
+        lastErrorSummary = `/embeddings status=${a.status} body=${truncate(a.text || "", 120)}`;
+      }
+
+      const b = await this.fetchJson(
+        endpointB,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        },
+        this.cfg.semanticTimeoutMs,
+      ).catch(() => null);
+
+      if (b?.ok && b.body && typeof b.body === "object") {
+        const body = b.body as Record<string, unknown>;
+        const embeddings = Array.isArray(body.embeddings) ? body.embeddings : [];
+        const first = Array.isArray(embeddings[0]) ? embeddings[0] : [];
+        const vector = first
+          .map((v) => (typeof v === "number" && Number.isFinite(v) ? v : null))
+          .filter((v): v is number => v !== null);
+        if (vector.length > 0) {
+          return vector;
+        }
+      } else if (b) {
+        lastErrorSummary = `${lastErrorSummary ? `${lastErrorSummary}; ` : ""}/api/embed status=${b.status} body=${truncate(b.text || "", 120)}`;
+      }
+
+      if (attempt < 3) {
+        await this.sleep(500 * attempt);
       }
     }
 
+    if (lastErrorSummary) {
+      this.logger.warn(`memory-viking-local: embedding request failed (${lastErrorSummary})`);
+    }
     this.warnUnavailable("embedding endpoint error");
     return null;
   }
@@ -160,8 +212,23 @@ export class SemanticVectorBridge {
     ).catch(() => null);
 
     if (getRes?.ok) {
-      this.collectionVectorSize = vectorSize;
-      return true;
+      const existingSize = this.extractCollectionVectorSize(getRes.body);
+      if (existingSize && existingSize !== vectorSize) {
+        this.logger.warn(
+          `memory-viking-local: qdrant collection dim mismatch existing=${existingSize} expected=${vectorSize}, recreating semantic index`,
+        );
+        await this.fetchJson(
+          base,
+          {
+            method: "DELETE",
+            headers: this.qdrantHeaders(),
+          },
+          this.cfg.semanticTimeoutMs,
+        ).catch(() => null);
+      } else {
+        this.collectionVectorSize = existingSize || vectorSize;
+        return true;
+      }
     }
 
     const createRes = await this.fetchJson(
@@ -308,6 +375,11 @@ export class SemanticVectorBridge {
     ).catch(() => null);
 
     if (!res?.ok || !res.body || typeof res.body !== "object") {
+      if (res) {
+        this.logger.warn(
+          `memory-viking-local: qdrant search failed status=${res.status} body=${truncate(res.text || "", 240)}`,
+        );
+      }
       this.warnUnavailable("qdrant search failed");
       return [];
     }
@@ -333,11 +405,11 @@ export class SemanticVectorBridge {
     return hits;
   }
 
-  async upsertMemoryRows(rows: Array<{ entry: MemoryIndexEntry; content: string }>): Promise<void> {
+  async upsertMemoryRows(rows: Array<{ entry: MemoryIndexEntry; content: string }>): Promise<number> {
     if (rows.length === 0) {
-      return;
+      return 0;
     }
-    await this.enqueueWrite(async () => {
+    return this.enqueueWrite(async () => {
       const points: Array<{ id: string; vector: number[]; payload: Record<string, unknown> }> = [];
       for (const row of rows) {
         const text = `${row.entry.abstract}\n${row.entry.overview}\n${row.content}`;
@@ -347,10 +419,10 @@ export class SemanticVectorBridge {
         }
         const ok = await this.ensureCollection(vector.length);
         if (!ok) {
-          return;
+          return 0;
         }
         points.push({
-          id: row.entry.uri,
+          id: this.pointIdForUri(row.entry.uri),
           vector,
           payload: {
             kind: "memory",
@@ -363,7 +435,7 @@ export class SemanticVectorBridge {
         });
       }
       if (points.length === 0) {
-        return;
+        return 0;
       }
       const endpoint = `${this.qdrantCollectionPath()}/points?wait=false`;
       const res = await this.fetchJson(
@@ -376,16 +448,23 @@ export class SemanticVectorBridge {
         this.cfg.semanticTimeoutMs,
       ).catch(() => null);
       if (!res?.ok) {
+        if (res) {
+          this.logger.warn(
+            `memory-viking-local: qdrant upsert(memory) failed status=${res.status} body=${truncate(res.text || "", 240)}`,
+          );
+        }
         this.warnUnavailable("qdrant upsert failed");
+        return 0;
       }
+      return points.length;
     });
   }
 
-  async upsertTimelineRows(rows: TimelineChunkRecord[]): Promise<void> {
+  async upsertTimelineRows(rows: TimelineChunkRecord[]): Promise<number> {
     if (rows.length === 0) {
-      return;
+      return 0;
     }
-    await this.enqueueWrite(async () => {
+    return this.enqueueWrite(async () => {
       const points: Array<{ id: string; vector: number[]; payload: Record<string, unknown> }> = [];
       for (const row of rows) {
         const text = `${row.entry.abstract}\n${row.entry.overview}\n${row.content}`;
@@ -395,10 +474,10 @@ export class SemanticVectorBridge {
         }
         const ok = await this.ensureCollection(vector.length);
         if (!ok) {
-          return;
+          return 0;
         }
         points.push({
-          id: row.entry.uri,
+          id: this.pointIdForUri(row.entry.uri),
           vector,
           payload: {
             kind: "timeline",
@@ -412,7 +491,7 @@ export class SemanticVectorBridge {
         });
       }
       if (points.length === 0) {
-        return;
+        return 0;
       }
       const endpoint = `${this.qdrantCollectionPath()}/points?wait=false`;
       const res = await this.fetchJson(
@@ -425,8 +504,15 @@ export class SemanticVectorBridge {
         this.cfg.semanticTimeoutMs,
       ).catch(() => null);
       if (!res?.ok) {
+        if (res) {
+          this.logger.warn(
+            `memory-viking-local: qdrant upsert(timeline) failed status=${res.status} body=${truncate(res.text || "", 240)}`,
+          );
+        }
         this.warnUnavailable("qdrant upsert failed");
+        return 0;
       }
+      return points.length;
     });
   }
 
@@ -445,12 +531,17 @@ export class SemanticVectorBridge {
         method: "POST",
         headers: this.qdrantHeaders(),
         body: JSON.stringify({
-          points: cleaned,
+          points: cleaned.map((uri) => this.pointIdForUri(uri)),
         }),
       },
       this.cfg.semanticTimeoutMs,
     ).catch(() => null);
     if (!res?.ok) {
+      if (res) {
+        this.logger.warn(
+          `memory-viking-local: qdrant delete failed status=${res.status} body=${truncate(res.text || "", 240)}`,
+        );
+      }
       this.warnUnavailable("qdrant delete failed");
     }
   }
@@ -466,10 +557,12 @@ export class SemanticVectorBridge {
         store.exportForSemantic(limit),
         timelineStore.exportForSemantic(limit),
       ]);
-      await this.upsertMemoryRows(memRows);
-      await this.upsertTimelineRows(timelineRows);
+      const [indexedMemory, indexedTimeline] = await Promise.all([
+        this.upsertMemoryRows(memRows),
+        this.upsertTimelineRows(timelineRows),
+      ]);
       this.logger.info?.(
-        `memory-viking-local: semantic backfill complete memory=${memRows.length}, timeline=${timelineRows.length}`,
+        `memory-viking-local: semantic backfill complete memory=${indexedMemory}/${memRows.length}, timeline=${indexedTimeline}/${timelineRows.length}`,
       );
     } catch (err) {
       this.logger.warn(`memory-viking-local: semantic backfill failed: ${String(err)}`);

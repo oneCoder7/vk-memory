@@ -48,6 +48,20 @@ export class Mem0ExtractorClient {
     return [];
   }
 
+  private buildTroubleshootingHint(errorText: string): string {
+    const normalized = errorText.toLowerCase();
+    if (normalized.includes("/chat/completions") || normalized.includes("url.not_found")) {
+      return "check MEM0_LLM_BASE_URL and MEM0_LLM_MODEL (provider must support OpenAI /chat/completions).";
+    }
+    if (normalized.includes("401") || normalized.includes("unauthorized") || normalized.includes("invalid api key")) {
+      return "check MEM0_LLM_API_KEY.";
+    }
+    if (normalized.includes("model") && normalized.includes("not found")) {
+      return "check MEM0_LLM_MODEL is valid for your provider.";
+    }
+    return "";
+  }
+
   private normalizeCandidates(rows: Mem0ResultRow[]): ExtractedMemoryCandidate[] {
     const out: ExtractedMemoryCandidate[] = [];
     const seen = new Set<string>();
@@ -157,7 +171,11 @@ export class Mem0ExtractorClient {
       }
       return candidates;
     } catch (err) {
-      this.logger.warn(`memory-viking-local: Mem0 extraction failed: ${String(err)}`);
+      const raw = String(err);
+      const hint = this.buildTroubleshootingHint(raw);
+      this.logger.warn(
+        `memory-viking-local: Mem0 extraction failed: ${raw}${hint ? ` (hint: ${hint})` : ""}`,
+      );
       return [];
     } finally {
       clearTimeout(timeout);

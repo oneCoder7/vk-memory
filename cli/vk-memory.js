@@ -379,6 +379,7 @@ function printHelp() {
       "  --chunk-chars=n  Max chars per migrated chunk (for migrate)",
       "  --openclaw-config=<path>  Custom OpenClaw config JSON path (for uninstall)",
       "  --dry-run        Show result without writing files (migrate/uninstall)",
+      "  --skip-llm-check Skip mem0 LLM preflight in vk-memory start",
       "",
       "Examples:",
       "  vk-memory setup",
@@ -518,6 +519,66 @@ function runCommand(command, args, opts = {}) {
   });
 }
 
+function parsePort(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  const port = Math.floor(parsed);
+  if (port < 1 || port > 65535) {
+    return fallback;
+  }
+  return port;
+}
+
+async function fetchWithTimeout(url, init = {}, timeoutMs = 15000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    const text = await response.text().catch(() => "");
+    return {
+      ok: response.ok,
+      status: response.status,
+      text,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function waitUntil(name, checkFn, timeoutMs = 180000, intervalMs = 2000) {
+  const start = Date.now();
+  let lastError = "unknown";
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const ok = await checkFn();
+      if (ok) {
+        return;
+      }
+      lastError = "condition not met";
+    } catch (error) {
+      lastError = String(error);
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, intervalMs));
+  }
+  throw new Error(`${name} not ready within ${Math.floor(timeoutMs / 1000)}s (${lastError})`);
+}
+
+function buildMem0Hint(errorText) {
+  const normalized = String(errorText).toLowerCase();
+  if (normalized.includes("/chat/completions") || normalized.includes("url.not_found")) {
+    return "检查 MEM0_LLM_BASE_URL / MEM0_LLM_MODEL；当前厂商未提供 OpenAI /chat/completions 或模型名不正确。";
+  }
+  if (normalized.includes("401") || normalized.includes("unauthorized") || normalized.includes("invalid api key")) {
+    return "检查 MEM0_LLM_API_KEY 是否正确、是否有可用配额。";
+  }
+  if (normalized.includes("model") && normalized.includes("not found")) {
+    return "检查 MEM0_LLM_MODEL 是否为厂商真实可用模型名。";
+  }
+  return "";
+}
+
 async function askLine(rl, label, fallback) {
   const answer = await rl.question(`${label} [${fallback}]: `);
   const trimmed = answer.trim();
@@ -631,12 +692,159 @@ async function ensureReadyForStart() {
   if (!env.MEM0_LLM_API_KEY || !env.MEM0_LLM_API_KEY.trim()) {
     throw new Error(`MEM0_LLM_API_KEY is empty in ${STACK_ENV_PATH}. Run: vk-memory config`);
   }
-  return runtime;
+  return { runtime, env };
 }
 
-async function cmdStart() {
-  const runtime = await ensureReadyForStart();
+async function preflightLocalStack(env, options = {}) {
+  const qdrantPort = parsePort(env.HOST_QDRANT_PORT, 16333);
+  const embeddingPort = parsePort(env.HOST_EMBEDDING_PORT, 17997);
+  const rerankPort = parsePort(env.HOST_RERANK_PORT, 17998);
+  const mem0Port = parsePort(env.HOST_MEM0_PORT, 18888);
+  const skipLlmCheck = Boolean(options.skipLlmCheck);
+
+  const qdrantBase = `http://127.0.0.1:${qdrantPort}`;
+  const embeddingBase = `http://127.0.0.1:${embeddingPort}`;
+  const rerankBase = `http://127.0.0.1:${rerankPort}`;
+  const mem0Base = `http://127.0.0.1:${mem0Port}`;
+
+  process.stdout.write("[INFO] Waiting for local memory services to become ready...\n");
+  await waitUntil(
+    "qdrant",
+    async () => {
+      const res = await fetchWithTimeout(`${qdrantBase}/collections`, {}, 6000).catch(() => null);
+      return Boolean(res?.ok);
+    },
+    180000,
+    2000,
+  );
+
+  await waitUntil(
+    "infinity-embed",
+    async () => {
+      const res = await fetchWithTimeout(`${embeddingBase}/models`, {}, 6000).catch(() => null);
+      return Boolean(res?.ok);
+    },
+    180000,
+    2000,
+  );
+
+  await waitUntil(
+    "infinity-rerank",
+    async () => {
+      const res = await fetchWithTimeout(`${rerankBase}/models`, {}, 6000).catch(() => null);
+      return Boolean(res?.ok);
+    },
+    180000,
+    2000,
+  );
+
+  await waitUntil(
+    "mem0",
+    async () => {
+      const res = await fetchWithTimeout(`${mem0Base}/docs`, {}, 6000).catch(() => null);
+      return Boolean(res?.ok);
+    },
+    180000,
+    2000,
+  );
+
+  await waitUntil(
+    "embedding warmup",
+    async () => {
+      const res = await fetchWithTimeout(
+        `${embeddingBase}/embeddings`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "BAAI/bge-m3",
+            input: "vk-memory warmup",
+          }),
+        },
+        45000,
+      ).catch(() => null);
+      if (!res?.ok) {
+        return false;
+      }
+      return res.text.includes("embedding");
+    },
+    180000,
+    3000,
+  );
+
+  await waitUntil(
+    "rerank warmup",
+    async () => {
+      const res = await fetchWithTimeout(
+        `${rerankBase}/rerank`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "BAAI/bge-reranker-v2-m3",
+            query: "vk-memory warmup",
+            documents: ["vk-memory warmup document"],
+            top_n: 1,
+          }),
+        },
+        45000,
+      ).catch(() => null);
+      if (!res?.ok) {
+        return false;
+      }
+      return res.text.includes("results");
+    },
+    180000,
+    3000,
+  );
+
+  if (skipLlmCheck) {
+    process.stdout.write("[WARN] Skipped mem0 LLM preflight (--skip-llm-check).\n");
+    process.stdout.write("[OK] local stack preflight passed (without LLM check).\n");
+    return;
+  }
+
+  const probeUser = "vk-memory-preflight-user";
+  const probeRun = `vk-memory-preflight-${Date.now()}`;
+  const addRes = await fetchWithTimeout(
+    `${mem0Base}/memories`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: "请记住：这是一次 vk-memory 启动连通性检测。" }],
+        user_id: probeUser,
+        run_id: probeRun,
+      }),
+    },
+    60000,
+  ).catch((error) => {
+    throw new Error(`mem0 llm preflight request failed: ${String(error)}`);
+  });
+
+  if (!addRes?.ok) {
+    const hint = buildMem0Hint(addRes?.text || "");
+    throw new Error(
+      `mem0 llm preflight failed (HTTP ${String(addRes?.status ?? "unknown")}): ${String(addRes?.text || "").slice(0, 260)}${hint ? `\nHint: ${hint}` : ""}`,
+    );
+  }
+
+  await fetchWithTimeout(
+    `${mem0Base}/memories?user_id=${encodeURIComponent(probeUser)}`,
+    {
+      method: "DELETE",
+    },
+    15000,
+  ).catch(() => null);
+
+  process.stdout.write("[OK] local stack preflight passed.\n");
+}
+
+async function cmdStart(args) {
+  const { runtime, env } = await ensureReadyForStart();
+  const skipLlmCheck = hasOption(args, "--skip-llm-check");
   await runCompose(runtime, ["--env-file", ".env", "up", "-d"], { cwd: STACK_DIR });
+  await preflightLocalStack(env, { skipLlmCheck });
   process.stdout.write("[OK] local memory stack started.\n");
 }
 
@@ -906,7 +1114,7 @@ async function main() {
     return;
   }
   if (command === "start") {
-    await cmdStart();
+    await cmdStart(args);
     return;
   }
   if (command === "stop") {

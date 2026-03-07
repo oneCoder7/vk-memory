@@ -71,7 +71,7 @@ vk-memory help
 |---|---|
 | `vk-memory setup` | First-time init (plugin JSON + Docker stack `.env`) |
 | `vk-memory config` | Update existing config (including `debugLogs`) |
-| `vk-memory start` | Start local memory stack (`docker compose up -d`) |
+| `vk-memory start` | Start local stack and run readiness/connectivity preflight (Mem0 LLM check included by default) |
 | `vk-memory stop` | Stop local memory stack |
 | `vk-memory status` | Show stack status |
 | `vk-memory migrate` | Import existing OpenClaw local file memory |
@@ -268,10 +268,14 @@ If ports are changed, you may also need:
 3. Mem0 extraction not running
 - `vk-memory status`
 - `cd deploy/local-stack && docker compose logs -f mem0`
+- If logs contain `url.not_found` or `/chat/completions`:
+  - Your `MEM0_LLM_BASE_URL` / `MEM0_LLM_MODEL` combination is invalid for the provider.
+  - Run `vk-memory config`, then run `vk-memory start` again (preflight will verify).
 
 4. Semantic recall is empty
 - Check qdrant/infinity containers
 - If ports changed, verify `VIKING_MEMORY_*` env overrides
+- If you see `embedding endpoint error` right after startup, the model is usually still warming; newer `vk-memory start` waits for warmup before returning.
 
 ## 13. Manual Fallback (No Wrapper)
 
