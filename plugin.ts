@@ -23,6 +23,7 @@ import { Mem0ExtractorClient } from "./services/mem0-extractor-client.js";
 import { SemanticVectorBridge, applyRerankBlend, applySemanticScores } from "./services/semantic-vector-bridge.js";
 import { VikingLocalMemoryStore } from "./stores/memory-store.js";
 import { VikingLocalTimelineStore } from "./stores/timeline-store.js";
+import { VikingSessionFileLogger } from "./core/session-file-logger.js";
 
 const memoryPlugin = {
   id: PLUGIN_ID,
@@ -33,20 +34,40 @@ const memoryPlugin = {
 
   register(api: OpenClawPluginApi): void {
     const cfg = memoryLocalVikingConfigSchema.parse(api.pluginConfig);
-    const logInfo = (message: string): void => {
-      api.logger.info?.(`memory-viking-local: ${message}`);
+    const sessionFileLogger = new VikingSessionFileLogger(cfg.rootDir);
+
+    const emitRaw = (level: "info" | "warn" | "error" | "debug", message: string, sessionId = "system"): void => {
+      if (level === "warn" || level === "error") {
+        api.logger.warn?.(message);
+      } else {
+        api.logger.info?.(message);
+      }
+      sessionFileLogger.log(level, message, sessionId);
     };
-    const logDebug = (message: string): void => {
+
+    const logInfo = (message: string, sessionId = "system"): void => {
+      emitRaw("info", `memory-viking-local: ${message}`, sessionId);
+    };
+    const logWarn = (message: string, sessionId = "system"): void => {
+      emitRaw("warn", `memory-viking-local: ${message}`, sessionId);
+    };
+    const logDebug = (message: string, sessionId = "system"): void => {
       if (!cfg.debugLogs) {
         return;
       }
-      api.logger.info?.(`memory-viking-local[debug]: ${message}`);
+      emitRaw("debug", `memory-viking-local[debug]: ${message}`, sessionId);
     };
+
+    const serviceLogger = {
+      info: (message: string): void => emitRaw("info", message, "system"),
+      warn: (message: string): void => emitRaw("warn", message, "system"),
+      error: (message: string): void => emitRaw("error", message, "system"),
+    } as OpenClawPluginApi["logger"];
 
     const store = new VikingLocalMemoryStore(cfg);
     const timelineStore = new VikingLocalTimelineStore(cfg);
-    const mem0 = new Mem0ExtractorClient(cfg, api.logger);
-    const semantic = new SemanticVectorBridge(cfg, api.logger);
+    const mem0 = new Mem0ExtractorClient(cfg, serviceLogger);
+    const semantic = new SemanticVectorBridge(cfg, serviceLogger);
 
     const recallMemory = async (query: string, options: RecallOptions): Promise<MemoryMatch[]> => {
       const candidateLimit = Math.max(options.limit, options.limit * cfg.semanticCandidateMultiplier);
@@ -281,7 +302,7 @@ const memoryPlugin = {
           if (!stored.duplicate) {
             await semantic
               .upsertMemoryRows([{ entry: stored.entry, content: stored.content }])
-              .catch((err) => api.logger.warn(`memory-viking-local: semantic upsert(memory_store) failed: ${String(err)}`));
+              .catch((err) => logWarn(`semantic upsert(memory_store) failed: ${String(err)}`, "tool"));
           }
 
           const action = stored.duplicate ? "duplicate" : "stored";
@@ -322,7 +343,7 @@ const memoryPlugin = {
               const deletedUri = `${cfg.targetUri.replace(/\/+$/, "")}/${id}`;
               await semantic
                 .deleteUris([deletedUri])
-                .catch((err) => api.logger.warn(`memory-viking-local: semantic delete(id) failed: ${String(err)}`));
+                .catch((err) => logWarn(`semantic delete(id) failed: ${String(err)}`, "tool"));
             }
             return {
               content: [{ type: "text", text: ok ? `Forgotten id: ${id}` : `Memory id not found: ${id}` }],
@@ -335,7 +356,7 @@ const memoryPlugin = {
             if (ok) {
               await semantic
                 .deleteUris([uri])
-                .catch((err) => api.logger.warn(`memory-viking-local: semantic delete(uri) failed: ${String(err)}`));
+                .catch((err) => logWarn(`semantic delete(uri) failed: ${String(err)}`, "tool"));
             }
             return {
               content: [{ type: "text", text: ok ? `Forgotten uri: ${uri}` : `Memory uri not found: ${uri}` }],
@@ -376,7 +397,7 @@ const memoryPlugin = {
             if (ok) {
               await semantic
                 .deleteUris([top.uri])
-                .catch((err) => api.logger.warn(`memory-viking-local: semantic delete(query) failed: ${String(err)}`));
+                .catch((err) => logWarn(`semantic delete(query) failed: ${String(err)}`, "tool"));
             }
             return {
               content: [
@@ -491,13 +512,14 @@ const memoryPlugin = {
 
         logDebug(
           `auto-recall injected memory=${memories.length}, timeline=${timeline.length}, query="${truncate(query, 120)}"`,
+          sessionId,
         );
 
         return {
           prependContext: parts.join("\n\n"),
         };
       } catch (err) {
-        api.logger.warn(`memory-viking-local: auto-recall failed: ${String(err)}`);
+        logWarn(`auto-recall failed: ${String(err)}`, sessionId);
         return;
       }
     });
@@ -514,9 +536,10 @@ const memoryPlugin = {
         captureStats = await timelineStore.captureEvent(sessionId, event.messages);
         logDebug(
           `timeline-capture session=${captureStats.sessionId} observed=${captureStats.observed} ingested=${captureStats.ingested} duplicates=${captureStats.duplicates}`,
+          sessionId,
         );
       } catch (err) {
-        api.logger.warn(`memory-viking-local: timeline-capture failed: ${String(err)}`);
+        logWarn(`timeline-capture failed: ${String(err)}`, sessionId);
         return;
       }
 
@@ -527,20 +550,21 @@ const memoryPlugin = {
       if (captureStats.newChunks.length > 0) {
         await semantic
           .upsertTimelineRows(captureStats.newChunks)
-          .catch((err) => api.logger.warn(`memory-viking-local: semantic upsert(timeline) failed: ${String(err)}`));
+          .catch((err) => logWarn(`semantic upsert(timeline) failed: ${String(err)}`, sessionId));
       }
 
       let batchDecision;
       try {
         batchDecision = await timelineStore.prepareExtractorBatch(sessionId, captureStats.newTurns);
       } catch (err) {
-        api.logger.warn(`memory-viking-local: mem0-batch failed: ${String(err)}`);
+        logWarn(`mem0-batch failed: ${String(err)}`, sessionId);
         return;
       }
 
       if (!batchDecision.shouldExtract) {
         logDebug(
           `mem0 extraction deferred reason=${batchDecision.reason} pendingTurns=${batchDecision.pendingTurns} pendingChars=${batchDecision.pendingChars} pendingRounds=${batchDecision.pendingRounds}`,
+          sessionId,
         );
         return;
       }
@@ -550,6 +574,7 @@ const memoryPlugin = {
         if (extracted.length === 0) {
           logDebug(
             `mem0 produced 0 memories (session=${sessionId}, reason=${batchDecision.reason}, batchTurns=${batchDecision.batch.length}, pendingChars=${batchDecision.pendingChars})`,
+            sessionId,
           );
           return;
         }
@@ -580,17 +605,18 @@ const memoryPlugin = {
         if (newlyStoredRows.length > 0) {
           await semantic
             .upsertMemoryRows(newlyStoredRows)
-            .catch((err) => api.logger.warn(`memory-viking-local: semantic upsert(mem0) failed: ${String(err)}`));
+            .catch((err) => logWarn(`semantic upsert(mem0) failed: ${String(err)}`, sessionId));
         }
 
         logInfo(
           `mem0 stored=${storedCount}, duplicate=${duplicateCount}, candidates=${extracted.length}, reason=${batchDecision.reason}, batchTurns=${batchDecision.batch.length}`,
+          sessionId,
         );
       } catch (err) {
         await timelineStore
           .requeueExtractorBatch(sessionId, batchDecision.batch)
-          .catch((queueErr) => api.logger.warn(`memory-viking-local: mem0 batch requeue failed: ${String(queueErr)}`));
-        api.logger.warn(`memory-viking-local: mem0-store failed: ${String(err)}`);
+          .catch((queueErr) => logWarn(`mem0 batch requeue failed: ${String(queueErr)}`, sessionId));
+        logWarn(`mem0-store failed: ${String(err)}`, sessionId);
       }
     });
 
@@ -600,13 +626,10 @@ const memoryPlugin = {
         await Promise.all([store.init(), timelineStore.init()]);
         void semantic.startBackfill(store, timelineStore);
         if (!(await pathExists(cfg.envConfigPath))) {
-          api.logger.warn(
-            `memory-viking-local: first-run env config not found at ${cfg.envConfigPath}. ` +
-              "Run interactive setup once: vk-memory setup",
-          );
+          logWarn(`first-run env config not found at ${cfg.envConfigPath}. Run interactive setup once: vk-memory setup`);
         }
         logInfo(
-          `initialized at ${cfg.rootDir} (roundCapture=always, recall=always, mem0=${cfg.mem0BaseUrl}, extractionWindow=chars>=${EXTRACTOR_MIN_PENDING_CHARS}/rounds>=${EXTRACTOR_MIN_PENDING_ROUNDS}|forceTurns>=${EXTRACTOR_FORCE_PENDING_TURNS}, debugLogs=${cfg.debugLogs ? "on" : "off"})`,
+          `initialized at ${cfg.rootDir} (roundCapture=always, recall=always, mem0=${cfg.mem0BaseUrl}, extractionWindow=chars>=${EXTRACTOR_MIN_PENDING_CHARS}/rounds>=${EXTRACTOR_MIN_PENDING_ROUNDS}|forceTurns>=${EXTRACTOR_FORCE_PENDING_TURNS}, debugLogs=${cfg.debugLogs ? "on" : "off"}, logs=${cfg.rootDir}/logs/sessions/<session>/<YYYY-MM-DD>.log)`,
         );
       },
       stop: async () => {

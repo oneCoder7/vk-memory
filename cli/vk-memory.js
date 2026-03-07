@@ -30,7 +30,6 @@ const STACK_DEFAULTS = {
   MEM0_LLM_API_KEY: "",
   MEM0_LLM_BASE_URL: "https://api.openai.com/v1",
   MEM0_LLM_MODEL: "gpt-4.1-nano-2025-04-14",
-  MEM0_LLM_TEMPERATURE: "0.2",
   HOST_MEM0_PORT: "18888",
   HOST_QDRANT_PORT: "16333",
   HOST_EMBEDDING_PORT: "17997",
@@ -372,7 +371,7 @@ function printHelp() {
       "Options:",
       "  --yes            Non-interactive defaults (for setup/config)",
       "  --basic          Basic mode for plugin config setup",
-      "  --advanced       Advanced mode (plugin config + stack ports/temperature prompts)",
+      "  --advanced       Advanced mode (plugin config + stack port prompts)",
       "  --config=<path>  Custom plugin env JSON path (for setup/config)",
       "  --workspace=<p>  OpenClaw workspace path (for migrate)",
       "  --root=<path>    Viking memory root dir (for migrate)",
@@ -477,7 +476,6 @@ function renderDotEnv(values) {
     `MEM0_LLM_API_KEY=${values.MEM0_LLM_API_KEY ?? ""}`,
     `MEM0_LLM_BASE_URL=${values.MEM0_LLM_BASE_URL ?? STACK_DEFAULTS.MEM0_LLM_BASE_URL}`,
     `MEM0_LLM_MODEL=${values.MEM0_LLM_MODEL ?? STACK_DEFAULTS.MEM0_LLM_MODEL}`,
-    `MEM0_LLM_TEMPERATURE=${values.MEM0_LLM_TEMPERATURE ?? STACK_DEFAULTS.MEM0_LLM_TEMPERATURE}`,
     "",
     "# Optional host port overrides (change only if conflicts exist)",
     `HOST_MEM0_PORT=${values.HOST_MEM0_PORT ?? STACK_DEFAULTS.HOST_MEM0_PORT}`,
@@ -624,7 +622,7 @@ async function ensureStackEnv(args) {
   try {
     process.stdout.write("\nConfigure Mem0 LLM\n");
     if (advancedMode) {
-      process.stdout.write("Advanced mode: include temperature and host ports.\n");
+      process.stdout.write("Advanced mode: include host ports.\n");
     } else {
       process.stdout.write("Basic mode: only required LLM fields. Use --advanced to tune ports.\n");
     }
@@ -632,7 +630,6 @@ async function ensureStackEnv(args) {
     values.MEM0_LLM_BASE_URL = await askLine(rl, "MEM0_LLM_BASE_URL", values.MEM0_LLM_BASE_URL);
     values.MEM0_LLM_MODEL = await askLine(rl, "MEM0_LLM_MODEL", values.MEM0_LLM_MODEL);
     if (advancedMode) {
-      values.MEM0_LLM_TEMPERATURE = await askLine(rl, "MEM0_LLM_TEMPERATURE", values.MEM0_LLM_TEMPERATURE);
       values.HOST_MEM0_PORT = await askLine(rl, "HOST_MEM0_PORT", values.HOST_MEM0_PORT);
       values.HOST_QDRANT_PORT = await askLine(rl, "HOST_QDRANT_PORT", values.HOST_QDRANT_PORT);
       values.HOST_EMBEDDING_PORT = await askLine(rl, "HOST_EMBEDDING_PORT", values.HOST_EMBEDDING_PORT);
@@ -650,7 +647,7 @@ async function ensureStackEnv(args) {
   process.stdout.write(`[OK] Updated ${STACK_ENV_PATH}\n`);
 }
 
-function buildSetupHelperArgs(args) {
+function buildSetupHelperArgs(args, options = {}) {
   const out = [SETUP_HELPER_PATH];
   for (const arg of args) {
     if (
@@ -664,15 +661,18 @@ function buildSetupHelperArgs(args) {
       out.push(arg);
     }
   }
+  if (options.freshDefaults) {
+    out.push("--fresh");
+  }
   return out;
 }
 
-async function setupPluginConfig(args) {
-  await runCommand("node", buildSetupHelperArgs(args), { cwd: ROOT_DIR });
+async function setupPluginConfig(args, options = {}) {
+  await runCommand("node", buildSetupHelperArgs(args, options), { cwd: ROOT_DIR });
 }
 
 async function cmdSetup(args) {
-  await setupPluginConfig(args);
+  await setupPluginConfig(args, { freshDefaults: true });
   await ensureStackEnv(args);
   process.stdout.write("[OK] vk-memory setup completed.\n");
 }

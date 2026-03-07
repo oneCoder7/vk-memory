@@ -256,6 +256,9 @@ If ports are changed, you may also need:
 - `vk-memory config --advanced`
 - Set `debugLogs = y`
 - Restart `openclaw gateway`
+- Plugin logs are written to: `~/.viking-memory/logs/sessions/<session-id>/<YYYY-MM-DD>.log`
+- Non-session logs are written to: `~/.viking-memory/logs/sessions/system/<YYYY-MM-DD>.log`
+- Live tail example: `tail -f ~/.viking-memory/logs/sessions/default/$(date +%F).log`
 
 ## 12. Troubleshooting
 

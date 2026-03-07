@@ -113,6 +113,7 @@ function parseArgs(argv) {
   const argSet = new Set(argv);
   const yesMode = argSet.has("-y") || argSet.has("--yes");
   const helpMode = argSet.has("-h") || argSet.has("--help");
+  const freshMode = argSet.has("--fresh") || argSet.has("--reset-defaults");
   const configPathArg = argv.find((arg) => arg.startsWith("--config="));
   const modeArg = argv.find((arg) => arg.startsWith("--mode="));
 
@@ -128,6 +129,7 @@ function parseArgs(argv) {
   return {
     yesMode,
     helpMode,
+    freshMode,
     preferredMode,
     configPathRaw: configPathArg ? configPathArg.slice("--config=".length) : DEFAULT_CONFIG_PATH,
   };
@@ -141,21 +143,22 @@ function printHelp() {
   output.write("  --basic              Use basic interactive mode (fewer questions)\n");
   output.write("  --advanced           Use advanced interactive mode (all questions)\n");
   output.write("  --mode=basic|advanced\n");
+  output.write("  --fresh              Ignore existing JSON and use built-in defaults as prompt seeds\n");
   output.write("  --config=<path>      Config JSON path (must be inside ~/.viking-memory)\n");
   output.write("  -h, --help           Show this message\n");
 }
 
 async function runInteractive(configPath, options) {
-  const { yesMode, preferredMode } = options;
+  const { yesMode, preferredMode, useExisting } = options;
 
   const defaults = {
     rootDir: "~/.viking-memory",
     debugLogs: false,
-    recallLimit: 6,
-    recallScoreThreshold: 0.12,
+    recallLimit: 10,
+    recallScoreThreshold: 0.18,
     includeOverviewInInject: true,
-    timelineRecallLimit: 4,
-    timelineScoreThreshold: 0.08,
+    timelineRecallLimit: 6,
+    timelineScoreThreshold: 0.12,
     includeTimelineOverviewInInject: true,
     detailOnRecallTool: false,
     detailChars: 1200,
@@ -163,7 +166,7 @@ async function runInteractive(configPath, options) {
     mem0TimeoutMs: 30000,
     semanticCandidateMultiplier: 6,
     semanticBlendWeight: 0.6,
-    semanticTimeoutMs: 8000,
+    semanticTimeoutMs: 30000,
     semanticBackfillLimit: 400,
   };
 
@@ -175,12 +178,14 @@ async function runInteractive(configPath, options) {
     throw new Error("Interactive setup requires a TTY. Use --yes for non-interactive mode.");
   }
 
-  const existing = await readExisting(configPath);
   const existingFiltered = {};
-  if (existing && typeof existing === "object") {
-    for (const key of SETUP_KEYS) {
-      if (Object.prototype.hasOwnProperty.call(existing, key)) {
-        existingFiltered[key] = existing[key];
+  if (useExisting) {
+    const existing = await readExisting(configPath);
+    if (existing && typeof existing === "object") {
+      for (const key of SETUP_KEYS) {
+        if (Object.prototype.hasOwnProperty.call(existing, key)) {
+          existingFiltered[key] = existing[key];
+        }
       }
     }
   }
@@ -325,6 +330,7 @@ async function main() {
   const config = await runInteractive(configPath, {
     yesMode: parsedArgs.yesMode,
     preferredMode: parsedArgs.preferredMode,
+    useExisting: !parsedArgs.freshMode,
   });
 
   const resolvedRoot = resolvePath(String(config.rootDir).replace(/^~/, homedir()));

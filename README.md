@@ -277,6 +277,9 @@ vk-memory uninstall
 - `vk-memory config --advanced`
 - 设置 `debugLogs = y`
 - 重启 `openclaw gateway`
+- 插件日志文件位于：`~/.viking-memory/logs/sessions/<session-id>/<YYYY-MM-DD>.log`
+- 会话无关日志会写到：`~/.viking-memory/logs/sessions/system/<YYYY-MM-DD>.log`
+- 实时查看示例：`tail -f ~/.viking-memory/logs/sessions/default/$(date +%F).log`
 
 ## 12. 故障排查
 

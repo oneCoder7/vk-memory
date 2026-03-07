@@ -21,12 +21,12 @@
     },
     "recallLimit": {
       "label": "Memory Recall Limit",
-      "placeholder": "6",
+      "placeholder": "10",
       "advanced": true
     },
     "recallScoreThreshold": {
       "label": "Memory Recall Threshold",
-      "placeholder": "0.12",
+      "placeholder": "0.18",
       "advanced": true
     },
     "includeOverviewInInject": {
@@ -36,12 +36,12 @@
     },
     "timelineRecallLimit": {
       "label": "Timeline Recall Limit",
-      "placeholder": "4",
+      "placeholder": "6",
       "advanced": true
     },
     "timelineScoreThreshold": {
       "label": "Timeline Recall Threshold",
-      "placeholder": "0.08",
+      "placeholder": "0.12",
       "advanced": true
     },
     "includeTimelineOverviewInInject": {
@@ -85,7 +85,7 @@
     },
     "semanticTimeoutMs": {
       "label": "Semantic Timeout (ms)",
-      "placeholder": "8000",
+      "placeholder": "30000",
       "advanced": true
     },
     "semanticBackfillLimit": {
