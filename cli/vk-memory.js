@@ -394,9 +394,62 @@ function printHelp() {
   );
 }
 
-function hasDockerCompose() {
-  const result = spawnSync("docker", ["compose", "version"], { stdio: "ignore" });
-  return !result.error && result.status === 0;
+function detectComposeRuntime() {
+  const plugin = spawnSync("docker", ["compose", "version"], {
+    stdio: "pipe",
+    encoding: "utf-8",
+  });
+  if (!plugin.error && plugin.status === 0) {
+    return {
+      command: "docker",
+      prefix: ["compose"],
+      label: "docker compose",
+    };
+  }
+
+  const legacy = spawnSync("docker-compose", ["version"], { stdio: "ignore" });
+  if (!legacy.error && legacy.status === 0) {
+    return {
+      command: "docker-compose",
+      prefix: [],
+      label: "docker-compose",
+    };
+  }
+
+  const pluginOutput = `${String(plugin.stdout ?? "")}\n${String(plugin.stderr ?? "")}`.toLowerCase();
+  if (plugin.error && plugin.error.code === "ENOENT") {
+    return {
+      error:
+        "docker command not found. Install Docker Desktop (or Docker Engine + Compose plugin) and retry.",
+    };
+  }
+  if (pluginOutput.includes("unknown command: docker compose")) {
+    return {
+      error:
+        "Docker is installed, but Compose plugin is missing. Install Docker Compose v2 plugin or docker-compose.",
+    };
+  }
+  if (legacy.error && legacy.error.code === "ENOENT") {
+    return {
+      error:
+        "docker compose is required. Neither docker compose plugin nor docker-compose was found.",
+    };
+  }
+  return {
+    error: "docker compose is required. Install Docker Desktop / Docker Compose first.",
+  };
+}
+
+function getComposeRuntime() {
+  const runtime = detectComposeRuntime();
+  if (!runtime || runtime.error) {
+    throw new Error(runtime?.error ?? "docker compose is required.");
+  }
+  return runtime;
+}
+
+async function runCompose(runtime, args, opts = {}) {
+  await runCommand(runtime.command, [...runtime.prefix, ...args], opts);
 }
 
 function parseDotEnv(raw) {
@@ -574,9 +627,7 @@ async function cmdConfig(args) {
 }
 
 async function ensureReadyForStart() {
-  if (!hasDockerCompose()) {
-    throw new Error("docker compose is required. Install Docker Desktop / Docker Compose first.");
-  }
+  const runtime = getComposeRuntime();
   if (!existsSync(STACK_ENV_PATH)) {
     throw new Error(`Stack env file not found: ${STACK_ENV_PATH}. Run: vk-memory setup`);
   }
@@ -584,27 +635,24 @@ async function ensureReadyForStart() {
   if (!env.MEM0_LLM_API_KEY || !env.MEM0_LLM_API_KEY.trim()) {
     throw new Error(`MEM0_LLM_API_KEY is empty in ${STACK_ENV_PATH}. Run: vk-memory config`);
   }
+  return runtime;
 }
 
 async function cmdStart() {
-  await ensureReadyForStart();
-  await runCommand("docker", ["compose", "--env-file", ".env", "up", "-d"], { cwd: STACK_DIR });
+  const runtime = await ensureReadyForStart();
+  await runCompose(runtime, ["--env-file", ".env", "up", "-d"], { cwd: STACK_DIR });
   process.stdout.write("[OK] local memory stack started.\n");
 }
 
 async function cmdStop() {
-  if (!hasDockerCompose()) {
-    throw new Error("docker compose is required.");
-  }
-  await runCommand("docker", ["compose", "--env-file", ".env", "down"], { cwd: STACK_DIR });
+  const runtime = getComposeRuntime();
+  await runCompose(runtime, ["--env-file", ".env", "down"], { cwd: STACK_DIR });
   process.stdout.write("[OK] local memory stack stopped.\n");
 }
 
 async function cmdStatus() {
-  if (!hasDockerCompose()) {
-    throw new Error("docker compose is required.");
-  }
-  await runCommand("docker", ["compose", "--env-file", ".env", "ps"], { cwd: STACK_DIR });
+  const runtime = getComposeRuntime();
+  await runCompose(runtime, ["--env-file", ".env", "ps"], { cwd: STACK_DIR });
 }
 
 async function cmdMigrate(args) {
