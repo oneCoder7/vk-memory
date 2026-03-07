@@ -15,10 +15,8 @@ const SETUP_KEYS = [
   "debugLogs",
   "recallLimit",
   "recallScoreThreshold",
-  "includeOverviewInInject",
   "timelineRecallLimit",
   "timelineScoreThreshold",
-  "includeTimelineOverviewInInject",
   "detailOnRecallTool",
   "detailChars",
   "detailCacheSize",
@@ -156,10 +154,8 @@ async function runInteractive(configPath, options) {
     debugLogs: false,
     recallLimit: 10,
     recallScoreThreshold: 0.18,
-    includeOverviewInInject: true,
     timelineRecallLimit: 6,
     timelineScoreThreshold: 0.12,
-    includeTimelineOverviewInInject: true,
     detailOnRecallTool: false,
     detailChars: 1200,
     detailCacheSize: 64,
@@ -231,24 +227,12 @@ async function runInteractive(configPath, options) {
       0,
       1,
     );
-    const includeOverviewInInject = toYesNo(
-      await ask(rl, "includeOverviewInInject (y/n)", seed.includeOverviewInInject ? "y" : "n"),
-      seed.includeOverviewInInject,
-    );
 
     const timelineScoreThreshold = toFloat(
       await ask(rl, "timelineScoreThreshold", String(seed.timelineScoreThreshold)),
       seed.timelineScoreThreshold,
       0,
       1,
-    );
-    const includeTimelineOverviewInInject = toYesNo(
-      await ask(
-        rl,
-        "includeTimelineOverviewInInject (y/n)",
-        seed.includeTimelineOverviewInInject ? "y" : "n",
-      ),
-      seed.includeTimelineOverviewInInject,
     );
 
     const detailOnRecallTool = toYesNo(
@@ -298,10 +282,8 @@ async function runInteractive(configPath, options) {
       debugLogs,
       recallLimit,
       recallScoreThreshold,
-      includeOverviewInInject,
       timelineRecallLimit,
       timelineScoreThreshold,
-      includeTimelineOverviewInInject,
       detailOnRecallTool,
       detailChars,
       detailCacheSize,

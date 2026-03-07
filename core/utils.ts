@@ -4,6 +4,11 @@ import { constants as fsConstants } from "node:fs";
 import type { MemoryCategory, MemoryMatch, TimelineMatch } from "./types.js";
 
 const MEMORY_BLOCK_RE = /<relevant-memories>[\s\S]*?<\/relevant-memories>/gi;
+const METADATA_PREAMBLE_RE = /conversation info \(untrusted metadata\)\s*:?\s*/gi;
+const METADATA_FENCE_RE = /```json[\s\S]*?```/gi;
+const METADATA_FIELD_RE =
+  /\b(?:message_id|sender_id|conversation_label|sender|timestamp|group_subject|is_group_chat)\b\s*[:：]\s*[^,;，；]+/gi;
+const NOISE_KEY_VALUE_RE = /\b(?:label|id|name)\b\s*[:：]\s*[a-z0-9_:/+.-]{6,}/gi;
 const CJK_RE = /[\u3400-\u9fff]/;
 const LATIN_TOKEN_RE = /[\p{L}\p{N}][\p{L}\p{N}_-]{1,31}/gu;
 const CJK_BLOCK_RE = /[\u3400-\u9fff]{2,}/g;
@@ -32,6 +37,31 @@ export function normalizeSpaces(text: string): string {
 
 export function sanitizeTextForMemory(text: string): string {
   return normalizeSpaces(text.replace(MEMORY_BLOCK_RE, " ").replace(/\u0000/g, " "));
+}
+
+export function compactRecallQuery(text: string): string {
+  if (!text) {
+    return "";
+  }
+  let cleaned = sanitizeTextForMemory(text)
+    .replace(METADATA_PREAMBLE_RE, " ")
+    .replace(METADATA_FENCE_RE, " ")
+    .replace(METADATA_FIELD_RE, " ")
+    .replace(NOISE_KEY_VALUE_RE, " ");
+  cleaned = normalizeSpaces(cleaned);
+  if (!cleaned) {
+    return "";
+  }
+
+  const sentences = splitSentences(cleaned).filter(Boolean);
+  if (sentences.length > 0) {
+    const nonMeta = sentences.filter(
+      (line) => !/^(?:sender|message|timestamp|conversation|label|id|name)\s*[:：]/i.test(line),
+    );
+    cleaned = nonMeta[nonMeta.length - 1] ?? sentences[sentences.length - 1] ?? cleaned;
+  }
+
+  return normalizeSpaces(cleaned);
 }
 
 export function normalizeForDedupe(text: string): string {

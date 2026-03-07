@@ -129,39 +129,41 @@ In short:
 - `timeline` prevents detail loss
 - `memory` prevents noise overload
 
-## 5. Why Recall Both
+## 5. Why Recall Both (plus recent-timeline)
 
-The plugin does not blindly inject both every time.
-It searches both indexes and injects only matched results.
+The plugin is not "always inject two channels".
+It uses short-term guaranteed context + dual semantic recall:
 
-Why two channels:
-1. `memory` only can miss fresh details not distilled yet.
-2. `timeline` only can be noisy and weak on stable long-term facts.
-3. Combined recall gives durable facts + recent context together.
+1. `recent-timeline`: always inject recent two rounds from current session (short-term continuity baseline)
+2. `memory`: add stable long-term facts
+3. cross-session `timeline`: add details not distilled into memory yet
 
-Timeline recall excludes current session by default to reduce echo.
+Semantic timeline recall excludes current session by default (to avoid echo), while `recent-timeline` still guarantees current-session short-term context.
 
 ## 6. Round Lifecycle (When Pull/Store Happens)
 
 ### 6.1 Before a round (`before_agent_start`)
 
-1. Build query from latest user text/prompt
-2. Search `memory` + `timeline`
-3. Inject only hits as `prependContext`
-4. No hits -> no injection
+1. Build query from latest user text/prompt and compact metadata noise (`compactRecallQuery`)
+2. Always fetch recent two rounds from current session as `recent-timeline`
+3. Run semantic recall for `memory` + cross-session `timeline`
+4. Dedup + dynamic topK trimming before final injection (short-term first)
+5. Inject matched results as `prependContext`; no hits -> no injection
 
 Example injection shape:
 
 ```text
+<recent-timeline>
+1. [user] Please remember I only release on Wednesday this week
+2. [assistant] Noted, this week's release window is Wednesday
+</recent-timeline>
+
 <relevant-memories>
 1. [preference] User prefers Vim
-   overview: Category: preference ...
 </relevant-memories>
 
 <relevant-timeline>
 1. [user] We moved release window to Wednesday yesterday
-   session: default
-   overview: Session: default Role: user ...
 </relevant-timeline>
 ```
 
@@ -241,7 +243,35 @@ If ports are changed, you may also need:
 - `VIKING_MEMORY_EMBEDDING_URL`
 - `VIKING_MEMORY_RERANK_URL`
 
-## 11. FAQ
+## 11. Performance Optimizations (Implemented)
+
+The current version already includes the following optimizations (no extra config needed):
+
+1. Query compaction
+
+- Removes noisy metadata such as `Conversation info (untrusted metadata)` before retrieval.
+
+1. Per-round short-term baseline injection
+
+- Always injects recent two rounds from current session (`recent-timeline`) to avoid short-window misses.
+
+1. Semantic recall cache (TTL 60s)
+
+- Caches recall by `session + query + index revision`, reducing repeated retrieval latency on follow-up turns.
+
+1. 10-round injection dedup
+
+- Same URI will not be injected again within the latest 10 rounds in the same session.
+
+1. Cross-block dedup
+
+- Dedups across `recent-timeline / relevant-timeline / relevant-memories` by `sourceHash + abstract`.
+
+1. Dynamic topK (short-term first)
+
+- Under high confidence, timeline is prioritized and memory is shrunk automatically, reducing prompt tokens while keeping continuity.
+
+## 12. FAQ
 
 1. Why does it feel like everything is timeline?
 - Timeline is written every round by design; durable memory is batch-distilled by extraction window.
@@ -258,14 +288,9 @@ If ports are changed, you may also need:
 - Trust `plugins.slots.memory` + plugin logs for slot-level behavior.
 
 5. Why did conversations become slower after enabling this plugin?
-- Each round runs hybrid auto-recall in `before_agent_start` (embedding + qdrant + rerank across memory/timeline).
-- If the agent also calls `memory_recall`, that adds another recall pass (newer code parallelizes recall and caps rerank candidates).
-- Tune first: `semanticCandidateMultiplier` (recommend 2-3), `recallLimit`, `timelineRecallLimit`.
-- Current local-first defaults (latency oriented):
-  - `auto-recall` uses `rerankMode=never` by default
-  - Skip rerank when memory corpus is `<100`
-  - Skip rerank when thresholded results are already sufficient and not ambiguous
-  - Rerank max docs = 4, timeout = 1500ms, breaker opens after 3 slow/empty runs for 60s
+- Each round runs a recall path in `before_agent_start`; if the agent also calls `memory_recall`, that adds another recall pass.
+- Current version already has query compaction, 60s recall cache, 10-round dedup, cross-block dedup, and short-term-first dynamic topK.
+- If more speed is needed, tune: `semanticCandidateMultiplier` (recommend 2-3), `recallLimit`, `timelineRecallLimit`.
 
 6. How to enable verbose logs?
 - `vk-memory config --advanced`
@@ -279,9 +304,13 @@ If ports are changed, you may also need:
   - `retrieve.timeline.start/done`
   - `memory_recall.start/done`
   - `auto-recall.start/done`
+  - `auto-recall.recent`
+  - `auto-recall.cache hit/store`
+  - `auto-recall.topk`
+  - `auto-recall.cross-dedup`
   - `summary.mem0.start/done` and `summary.mem0.http.start/done`
 
-## 12. Troubleshooting
+## 13. Troubleshooting
 
 1. `vk-memory: command not found`
 - Add `~/.local/bin` to PATH and reopen terminal.
@@ -301,7 +330,7 @@ If ports are changed, you may also need:
 - If ports changed, verify `VIKING_MEMORY_*` env overrides
 - If you see `embedding endpoint error` right after startup, the model is usually still warming; newer `vk-memory start` waits for warmup before returning.
 
-## 13. Manual Fallback (No Wrapper)
+## 14. Manual Fallback (No Wrapper)
 
 ```bash
 node ~/.openclaw/extensions/memory-viking-local/cli/vk-memory.js setup

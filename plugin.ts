@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { memoryLocalVikingConfigSchema } from "./config.js";
@@ -19,6 +20,7 @@ import {
   RERANK_TIMEOUT_MS,
 } from "./core/constants.js";
 import {
+  compactRecallQuery,
   extractLatestUserText,
   formatMemoryLines,
   formatTimelineLines,
@@ -93,6 +95,167 @@ const memoryPlugin = {
     };
     const computeAdaptiveRerankLimit = (limit: number, candidateCount: number): number =>
       Math.max(2, Math.min(RERANK_MAX_DOCS, candidateCount, Math.max(2, limit)));
+    const INJECTION_DEDUP_WINDOW_ROUNDS = 10;
+    const AUTO_RECALL_CACHE_TTL_MS = 60_000;
+    const AUTO_RECALL_MEMORY_ENOUGH = Math.max(1, Math.ceil(cfg.recallLimit * 0.75));
+    const AUTO_RECALL_TIMELINE_FLOOR = Math.max(1, Math.min(cfg.timelineRecallLimit, 2));
+    const AUTO_RECALL_RECENT_ROUNDS = 2;
+    const AUTO_RECALL_RECENT_TURNS = AUTO_RECALL_RECENT_ROUNDS * 2;
+    type AutoRecallCacheEntry = {
+      expiresAt: number;
+      createdAt: number;
+      memories: MemoryMatch[];
+      timeline: TimelineMatch[];
+    };
+    type SessionInjectionDedupState = {
+      round: number;
+      lastInjectedRoundByUri: Map<string, number>;
+    };
+    const injectionDedupBySession = new Map<string, SessionInjectionDedupState>();
+    const autoRecallCache = new Map<string, AutoRecallCacheEntry>();
+    const stableHash = (text: string): string => createHash("sha1").update(text).digest("hex").slice(0, 16);
+    const buildAutoRecallCacheKey = (params: {
+      sessionId: string;
+      query: string;
+      memoryRevision: string;
+      timelineRevision: string;
+      memoryLimit: number;
+      timelineLimit: number;
+      recallThreshold: number;
+      timelineThreshold: number;
+    }): string =>
+      [
+        params.sessionId,
+        stableHash(params.query),
+        params.memoryRevision,
+        params.timelineRevision,
+        params.memoryLimit,
+        params.timelineLimit,
+        params.recallThreshold.toFixed(4),
+        params.timelineThreshold.toFixed(4),
+      ].join("|");
+    const pruneAutoRecallCache = (): void => {
+      const now = Date.now();
+      for (const [key, entry] of autoRecallCache.entries()) {
+        if (entry.expiresAt <= now) {
+          autoRecallCache.delete(key);
+        }
+      }
+    };
+    const nextInjectionDedupState = (sessionId: string): SessionInjectionDedupState => {
+      const state = injectionDedupBySession.get(sessionId) ?? {
+        round: 0,
+        lastInjectedRoundByUri: new Map<string, number>(),
+      };
+      state.round += 1;
+      for (const [uri, lastRound] of state.lastInjectedRoundByUri.entries()) {
+        if (state.round - lastRound > INJECTION_DEDUP_WINDOW_ROUNDS) {
+          state.lastInjectedRoundByUri.delete(uri);
+        }
+      }
+      injectionDedupBySession.set(sessionId, state);
+      return state;
+    };
+    const filterRecentlyInjected = <T extends { uri: string }>(
+      items: T[],
+      state: SessionInjectionDedupState,
+    ): { fresh: T[]; skipped: number } => {
+      const fresh: T[] = [];
+      let skipped = 0;
+      for (const item of items) {
+        const uri = String(item.uri ?? "");
+        if (!uri) {
+          continue;
+        }
+        const lastRound = state.lastInjectedRoundByUri.get(uri);
+        if (typeof lastRound === "number" && state.round - lastRound <= INJECTION_DEDUP_WINDOW_ROUNDS) {
+          skipped += 1;
+          continue;
+        }
+        fresh.push(item);
+      }
+      return { fresh, skipped };
+    };
+    const markInjectedUris = (state: SessionInjectionDedupState, uris: string[]): void => {
+      for (const uri of new Set(uris.map((item) => String(item ?? "").trim()).filter(Boolean))) {
+        state.lastInjectedRoundByUri.set(uri, state.round);
+      }
+    };
+    const classifyConfidence = <T extends { score: number }>(items: T[]): "high" | "medium" | "low" => {
+      if (items.length === 0) {
+        return "low";
+      }
+      const top1 = items[0]?.score ?? 0;
+      const top2 = items[1]?.score ?? 0;
+      const gap = items.length > 1 ? top1 - top2 : top1;
+      if (top1 >= 0.72 && gap >= 0.12) {
+        return "high";
+      }
+      if (top1 >= 0.58 && gap >= 0.06) {
+        return "medium";
+      }
+      return "low";
+    };
+    const computeDynamicInjectCaps = (
+      memoryMatches: MemoryMatch[],
+      timelineMatches: TimelineMatch[],
+      memoryLimit: number,
+      timelineLimit: number,
+    ): {
+      memoryCap: number;
+      timelineCap: number;
+      memoryConfidence: "high" | "medium" | "low";
+      timelineConfidence: "high" | "medium" | "low";
+    } => {
+      const memoryConfidence = classifyConfidence(memoryMatches);
+      const timelineConfidence = classifyConfidence(timelineMatches);
+      let memoryCap = Math.max(0, memoryLimit);
+      let timelineCap = Math.max(0, timelineLimit);
+      if (memoryConfidence === "high") {
+        memoryCap = Math.min(memoryCap, 1);
+      } else if (memoryConfidence === "medium") {
+        memoryCap = Math.min(memoryCap, 2);
+      } else {
+        memoryCap = Math.min(memoryCap, 3);
+      }
+      if (timelineConfidence === "high") {
+        timelineCap = Math.min(timelineCap, 2);
+      } else if (timelineConfidence === "medium") {
+        timelineCap = Math.min(timelineCap, 2);
+      } else {
+        timelineCap = Math.min(timelineCap, Math.max(2, timelineLimit));
+      }
+      if (timelineMatches.length > 0) {
+        timelineCap = Math.max(1, Math.min(timelineCap, timelineMatches.length));
+      }
+      if (memoryMatches.length > 0) {
+        memoryCap = Math.max(1, Math.min(memoryCap, memoryMatches.length));
+      }
+      return {
+        memoryCap,
+        timelineCap,
+        memoryConfidence,
+        timelineConfidence,
+      };
+    };
+    const normalizeInjectAbstract = (text: string): string => text.toLowerCase().replace(/\s+/g, " ").trim();
+    const dedupCrossBlocks = <T extends { sourceHash: string; abstract: string }>(
+      items: T[],
+      seen: Set<string>,
+    ): { kept: T[]; skipped: number } => {
+      const kept: T[] = [];
+      let skipped = 0;
+      for (const item of items) {
+        const key = `${item.sourceHash || "nohash"}|${normalizeInjectAbstract(item.abstract)}`;
+        if (seen.has(key)) {
+          skipped += 1;
+          continue;
+        }
+        seen.add(key);
+        kept.push(item);
+      }
+      return { kept, skipped };
+    };
     const parseCategoryFilters = (raw: unknown): MemoryCategory[] | undefined => {
       if (typeof raw === "string" && raw.trim()) {
         const normalized = raw.trim().toLowerCase();
@@ -769,20 +932,74 @@ const memoryPlugin = {
     );
 
     api.on("before_agent_start", async (event) => {
-      const query = extractLatestUserText(event.messages) || sanitizeTextForMemory(event.prompt ?? "");
+      const rawQuery = extractLatestUserText(event.messages) || sanitizeTextForMemory(event.prompt ?? "");
+      const query = compactRecallQuery(rawQuery);
       if (!query || query.length < 3) {
         return;
       }
 
       const sessionId = resolveSessionIdFromEvent(event);
+      const dedupState = nextInjectionDedupState(sessionId);
       try {
         const recallStartedAt = Date.now();
+        const [memoryRevision, timelineRevision] = await Promise.all([
+          store.getRevision(),
+          timelineStore.getRevision(),
+        ]);
+        pruneAutoRecallCache();
+        if (rawQuery !== query) {
+          logDebug(
+            `auto-recall.query-compact rawChars=${rawQuery.length} compactChars=${query.length}`,
+            sessionId,
+          );
+        }
         logDebug(
-          `auto-recall.start query="${truncate(query, 120)}" memoryLimit=${cfg.recallLimit} timelineLimit=${cfg.timelineRecallLimit} rerankMode=never`,
+          `auto-recall.start query="${truncate(query, 120)}" memoryLimit=${cfg.recallLimit} timelineLimit=${cfg.timelineRecallLimit} timelineFloor=${AUTO_RECALL_TIMELINE_FLOOR} recentRounds=${AUTO_RECALL_RECENT_ROUNDS} rerankMode=never round=${dedupState.round} dedupWindowRounds=${INJECTION_DEDUP_WINDOW_ROUNDS}`,
           sessionId,
         );
-        const [memories, timeline] = await Promise.all([
-          recallMemory(query, {
+        const recentTimeline = (
+          await timelineStore.getRecentSessionTimeline(sessionId, {
+            limit: AUTO_RECALL_RECENT_TURNS,
+            includeDetails: false,
+            detailChars: cfg.detailChars,
+            roles: ["user", "assistant"],
+          })
+        ).reverse();
+        if (recentTimeline.length > 0) {
+          logDebug(
+            `auto-recall.recent session=${sessionId} turns=${recentTimeline.length} targetTurns=${AUTO_RECALL_RECENT_TURNS}`,
+            sessionId,
+          );
+        }
+        const recallCacheKey = buildAutoRecallCacheKey({
+          sessionId,
+          query,
+          memoryRevision,
+          timelineRevision,
+          memoryLimit: cfg.recallLimit,
+          timelineLimit: cfg.timelineRecallLimit,
+          recallThreshold: cfg.recallScoreThreshold,
+          timelineThreshold: cfg.timelineScoreThreshold,
+        });
+        const now = Date.now();
+        let memories: MemoryMatch[] = [];
+        let timeline: TimelineMatch[] = [];
+        let timelineLimitUsed = cfg.timelineRecallLimit;
+        const cacheEntry = autoRecallCache.get(recallCacheKey);
+        if (cacheEntry && cacheEntry.expiresAt > now) {
+          memories = cacheEntry.memories;
+          timeline = cacheEntry.timeline;
+          timelineLimitUsed =
+            memories.length < AUTO_RECALL_MEMORY_ENOUGH ? cfg.timelineRecallLimit : AUTO_RECALL_TIMELINE_FLOOR;
+          logDebug(
+            `auto-recall.cache hit ageMs=${now - cacheEntry.createdAt} ttlMs=${AUTO_RECALL_CACHE_TTL_MS} memory=${memories.length} timeline=${timeline.length}`,
+            sessionId,
+          );
+        } else {
+          if (cacheEntry) {
+            autoRecallCache.delete(recallCacheKey);
+          }
+          memories = await recallMemory(query, {
             limit: cfg.recallLimit,
             scoreThreshold: cfg.recallScoreThreshold,
             includeDetails: false,
@@ -791,9 +1008,11 @@ const memoryPlugin = {
             sessionId,
             scene: "auto_recall",
             rerankMode: "never",
-          }),
-          recallTimeline(query, {
-            limit: cfg.timelineRecallLimit,
+          });
+          timelineLimitUsed =
+            memories.length < AUTO_RECALL_MEMORY_ENOUGH ? cfg.timelineRecallLimit : AUTO_RECALL_TIMELINE_FLOOR;
+          timeline = await recallTimeline(query, {
+            limit: timelineLimitUsed,
             scoreThreshold: cfg.timelineScoreThreshold,
             includeDetails: false,
             detailChars: cfg.detailChars,
@@ -802,52 +1021,113 @@ const memoryPlugin = {
             sessionId,
             scene: "auto_recall",
             rerankMode: "never",
-          }),
-        ]);
+          });
+          if (timelineLimitUsed < cfg.timelineRecallLimit) {
+            logDebug(
+              `auto-recall.timeline.limit reason=memory_sufficient memory=${memories.length} threshold=${AUTO_RECALL_MEMORY_ENOUGH} limit=${timelineLimitUsed}/${cfg.timelineRecallLimit}`,
+              sessionId,
+            );
+          }
+          autoRecallCache.set(recallCacheKey, {
+            createdAt: now,
+            expiresAt: now + AUTO_RECALL_CACHE_TTL_MS,
+            memories,
+            timeline,
+          });
+          logDebug(
+            `auto-recall.cache store ttlMs=${AUTO_RECALL_CACHE_TTL_MS} memory=${memories.length} timeline=${timeline.length}`,
+            sessionId,
+          );
+        }
 
-        if (memories.length === 0 && timeline.length === 0) {
-          logDebug(`auto-recall.done elapsedMs=${Date.now() - recallStartedAt} memory=0 timeline=0 injected=false`, sessionId);
+        if (memories.length === 0 && timeline.length === 0 && recentTimeline.length === 0) {
+          logDebug(
+            `auto-recall.done elapsedMs=${Date.now() - recallStartedAt} memory=0 timeline=0 recent=0 injected=false`,
+            sessionId,
+          );
+          return;
+        }
+
+        const dedupedMemories = filterRecentlyInjected(memories, dedupState);
+        const dedupedTimeline = filterRecentlyInjected(timeline, dedupState);
+        const filteredMemories = dedupedMemories.fresh;
+        const filteredTimeline = dedupedTimeline.fresh;
+        const dedupSkipped = dedupedMemories.skipped + dedupedTimeline.skipped;
+        if (dedupSkipped > 0) {
+          logDebug(
+            `auto-recall.dedup round=${dedupState.round} skipped=${dedupSkipped} memorySkipped=${dedupedMemories.skipped} timelineSkipped=${dedupedTimeline.skipped}`,
+            sessionId,
+          );
+        }
+        if (filteredMemories.length === 0 && filteredTimeline.length === 0 && recentTimeline.length === 0) {
+          logDebug(
+            `auto-recall.done elapsedMs=${Date.now() - recallStartedAt} memory=0 timeline=0 recent=0 injected=false reason=dedup_window skipped=${dedupSkipped} round=${dedupState.round}`,
+            sessionId,
+          );
+          return;
+        }
+
+        const dynamicCaps = computeDynamicInjectCaps(
+          filteredMemories,
+          filteredTimeline,
+          cfg.recallLimit,
+          timelineLimitUsed,
+        );
+        const cappedMemories = filteredMemories.slice(0, dynamicCaps.memoryCap);
+        const cappedTimeline = filteredTimeline.slice(0, dynamicCaps.timelineCap);
+        if (cappedMemories.length !== filteredMemories.length || cappedTimeline.length !== filteredTimeline.length) {
+          logDebug(
+            `auto-recall.topk memory=${cappedMemories.length}/${filteredMemories.length} timeline=${cappedTimeline.length}/${filteredTimeline.length} memoryConfidence=${dynamicCaps.memoryConfidence} timelineConfidence=${dynamicCaps.timelineConfidence}`,
+            sessionId,
+          );
+        }
+
+        const crossSeen = new Set<string>();
+        const dedupRecent = dedupCrossBlocks(recentTimeline, crossSeen);
+        const dedupTimeline = dedupCrossBlocks(cappedTimeline, crossSeen);
+        const dedupMemory = dedupCrossBlocks(cappedMemories, crossSeen);
+        const crossDedupSkipped = dedupRecent.skipped + dedupTimeline.skipped + dedupMemory.skipped;
+        const finalRecentTimeline = dedupRecent.kept;
+        const finalTimeline = dedupTimeline.kept;
+        const finalMemories = dedupMemory.kept;
+        if (crossDedupSkipped > 0) {
+          logDebug(
+            `auto-recall.cross-dedup skipped=${crossDedupSkipped} recentSkipped=${dedupRecent.skipped} timelineSkipped=${dedupTimeline.skipped} memorySkipped=${dedupMemory.skipped}`,
+            sessionId,
+          );
+        }
+        if (finalMemories.length === 0 && finalTimeline.length === 0 && finalRecentTimeline.length === 0) {
+          logDebug(
+            `auto-recall.done elapsedMs=${Date.now() - recallStartedAt} memory=0 timeline=0 recent=0 injected=false reason=cross_block_dedup`,
+            sessionId,
+          );
           return;
         }
 
         const parts: string[] = [];
 
-        if (memories.length > 0) {
-          const lines = memories.map((item, idx) => {
-            const base = `${idx + 1}. [${item.category}] ${item.abstract}`;
-            if (!cfg.includeOverviewInInject) {
-              return base;
-            }
-            const overview = truncate(item.overview.replace(/\s+/g, " "), 220);
-            return `${base}\n   overview: ${overview}`;
-          });
-          parts.push(
-            "<relevant-memories>\n" +
-              "The following extracted memories from ~/.viking-memory may be relevant:\n" +
-              `${lines.join("\n")}\n` +
-              "</relevant-memories>",
-          );
+        if (finalRecentTimeline.length > 0) {
+          const lines = finalRecentTimeline.map((item, idx) => `${idx + 1}. [${item.role}] ${item.abstract}`);
+          parts.push(`<recent-timeline>\n${lines.join("\n")}\n</recent-timeline>`);
         }
 
-        if (timeline.length > 0) {
-          const lines = timeline.map((item, idx) => {
-            const base = `${idx + 1}. [${item.role}] ${item.abstract}`;
-            if (!cfg.includeTimelineOverviewInInject) {
-              return base;
-            }
-            const overview = truncate(item.overview.replace(/\s+/g, " "), 220);
-            return `${base}\n   session: ${item.sessionId}\n   overview: ${overview}`;
-          });
-          parts.push(
-            "<relevant-timeline>\n" +
-              "The following historical conversation chunks may be relevant:\n" +
-              `${lines.join("\n")}\n` +
-              "</relevant-timeline>",
-          );
+        if (finalTimeline.length > 0) {
+          const lines = finalTimeline.map((item, idx) => `${idx + 1}. [${item.role}] ${item.abstract}`);
+          parts.push(`<relevant-timeline>\n${lines.join("\n")}\n</relevant-timeline>`);
         }
+
+        if (finalMemories.length > 0) {
+          const lines = finalMemories.map((item, idx) => `${idx + 1}. [${item.category}] ${item.abstract}`);
+          parts.push(`<relevant-memories>\n${lines.join("\n")}\n</relevant-memories>`);
+        }
+
+        markInjectedUris(dedupState, [
+          ...finalMemories.map((item) => item.uri),
+          ...finalTimeline.map((item) => item.uri),
+        ]);
 
         logDebug(
-          `auto-recall.done elapsedMs=${Date.now() - recallStartedAt} memory=${memories.length} timeline=${timeline.length} injected=true query="${truncate(query, 120)}"`,
+          `auto-recall.done elapsedMs=${Date.now() - recallStartedAt} memory=${finalMemories.length} timeline=${finalTimeline.length} recent=${finalRecentTimeline.length} injected=true skipped=${dedupSkipped + crossDedupSkipped} round=${dedupState.round} query="${truncate(query, 120)}"`,
           sessionId,
         );
 
@@ -969,6 +1249,12 @@ const memoryPlugin = {
       id: PLUGIN_ID,
       start: async () => {
         await Promise.all([store.init(), timelineStore.init()]);
+        const repaired = await store.repairLayer0();
+        if (repaired.fixedEntries > 0 || repaired.fixedFiles > 0) {
+          logInfo(
+            `memory layer0 repaired entries=${repaired.fixedEntries}, files=${repaired.fixedFiles}`,
+          );
+        }
         void semantic.startBackfill(store, timelineStore);
         if (!(await pathExists(cfg.envConfigPath))) {
           logWarn(`first-run env config not found at ${cfg.envConfigPath}. Run interactive setup once: vk-memory setup`);

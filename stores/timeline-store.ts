@@ -531,6 +531,50 @@ export class VikingLocalTimelineStore {
     return matches;
   }
 
+  async getRecentSessionTimeline(
+    sessionId: string,
+    options: { limit: number; includeDetails: boolean; detailChars: number; roles?: string[] },
+  ): Promise<TimelineMatch[]> {
+    const safeLimit = Math.max(0, Math.floor(options.limit));
+    if (!sessionId || safeLimit === 0) {
+      return [];
+    }
+    const index = await this.loadIndex();
+    if (index.length === 0) {
+      return [];
+    }
+
+    const roleSet =
+      Array.isArray(options.roles) && options.roles.length > 0
+        ? new Set(options.roles.map((role) => String(role ?? "").trim().toLowerCase()).filter(Boolean))
+        : null;
+
+    const matches: TimelineMatch[] = [];
+    for (const entry of index) {
+      if (entry.sessionId !== sessionId) {
+        continue;
+      }
+      if (roleSet && !roleSet.has(entry.role.toLowerCase())) {
+        continue;
+      }
+      const match: TimelineMatch = {
+        ...entry,
+        score: 1,
+      };
+      if (options.includeDetails) {
+        const detail = await this.getDetail(entry.id);
+        if (detail?.content) {
+          match.detail = truncateForDetail(detail.content, options.detailChars);
+        }
+      }
+      matches.push(match);
+      if (matches.length >= safeLimit) {
+        break;
+      }
+    }
+    return matches;
+  }
+
   async exportForSemantic(limit: number): Promise<TimelineChunkRecord[]> {
     const safeLimit = Math.max(0, Math.floor(limit));
     if (safeLimit === 0) {
@@ -551,6 +595,15 @@ export class VikingLocalTimelineStore {
   async totalCount(): Promise<number> {
     const index = await this.loadIndex();
     return index.length;
+  }
+
+  async getRevision(): Promise<string> {
+    const index = await this.loadIndex();
+    if (index.length === 0) {
+      return "0";
+    }
+    const latest = index[0]?.updatedAt ?? "";
+    return `${index.length}:${latest}`;
   }
 
   async stats(): Promise<Record<string, unknown>> {

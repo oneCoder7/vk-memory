@@ -55,6 +55,53 @@ export class VikingLocalMemoryStore {
     await mkdir(this.memoriesDir, { recursive: true });
   }
 
+  async repairLayer0(): Promise<{ fixedEntries: number; fixedFiles: number }> {
+    return this.enqueueWrite(async () => {
+      const index = await this.loadIndex();
+      if (index.length === 0) {
+        return { fixedEntries: 0, fixedFiles: 0 };
+      }
+
+      let fixedEntries = 0;
+      let fixedFiles = 0;
+      let indexChanged = false;
+
+      for (const entry of index) {
+        const memoryDir = this.getMemoryDir(entry.id);
+        const abstractPath = join(memoryDir, ABSTRACT_FILE);
+        let abstract = typeof entry.abstract === "string" ? entry.abstract.trim() : "";
+
+        if (!abstract) {
+          const detail = await this.getDetail(entry.id);
+          const content = typeof detail?.content === "string" ? detail.content.trim() : "";
+          if (content) {
+            abstract = buildAbstract(content);
+          } else if (typeof entry.overview === "string" && entry.overview.trim()) {
+            abstract = buildAbstract(entry.overview.trim());
+          }
+          if (abstract) {
+            entry.abstract = abstract;
+            entry.updatedAt = nowIso();
+            fixedEntries += 1;
+            indexChanged = true;
+          }
+        }
+
+        if (abstract && !(await pathExists(abstractPath))) {
+          await writeTextAtomic(abstractPath, `${abstract}\n`);
+          fixedFiles += 1;
+        }
+      }
+
+      if (indexChanged) {
+        index.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+        await this.persistIndex(index);
+      }
+
+      return { fixedEntries, fixedFiles };
+    });
+  }
+
   private enqueueWrite<T>(job: () => Promise<T>): Promise<T> {
     const run = this.writeQueue.then(job, job);
     this.writeQueue = run.then(
@@ -318,6 +365,15 @@ export class VikingLocalMemoryStore {
   async totalCount(): Promise<number> {
     const index = await this.loadIndex();
     return index.length;
+  }
+
+  async getRevision(): Promise<string> {
+    const index = await this.loadIndex();
+    if (index.length === 0) {
+      return "0";
+    }
+    const latest = index[0]?.updatedAt ?? "";
+    return `${index.length}:${latest}`;
   }
 
   async stats(): Promise<Record<string, unknown>> {

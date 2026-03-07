@@ -9,13 +9,11 @@ export type MemoryLocalVikingConfig = {
   targetUri?: string;
   recallLimit?: number;
   recallScoreThreshold?: number;
-  includeOverviewInInject?: boolean;
   detailOnRecallTool?: boolean;
   detailChars?: number;
   detailCacheSize?: number;
   timelineRecallLimit?: number;
   timelineScoreThreshold?: number;
-  includeTimelineOverviewInInject?: boolean;
   mem0BaseUrl?: string;
   mem0UserId?: string;
   mem0AgentId?: string;
@@ -57,13 +55,11 @@ const ENV_CONFIG_ALLOWED_KEYS = [
   "debugLogs",
   "recallLimit",
   "recallScoreThreshold",
-  "includeOverviewInInject",
   "detailOnRecallTool",
   "detailChars",
   "detailCacheSize",
   "timelineRecallLimit",
   "timelineScoreThreshold",
-  "includeTimelineOverviewInInject",
   "mem0TimeoutMs",
   "semanticCandidateMultiplier",
   "semanticBlendWeight",
@@ -136,6 +132,16 @@ function assertAllowedKeys(value: Record<string, unknown>, allowed: readonly str
   }
 }
 
+function pickAllowedKeys(value: Record<string, unknown>, allowed: readonly string[]): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of allowed) {
+    if (key in value) {
+      out[key] = value[key];
+    }
+  }
+  return out;
+}
+
 function dropInternalFixedKeys(value: Record<string, unknown>): void {
   for (const key of INTERNAL_FIXED_KEYS) {
     if (key in value) {
@@ -175,10 +181,10 @@ export const memoryLocalVikingConfigSchema = {
 
     const envCfgRaw = readEnvConfig(resolvedEnvConfigPath);
     dropInternalFixedKeys(envCfgRaw);
-    assertAllowedKeys(envCfgRaw, [...ENV_CONFIG_ALLOWED_KEYS], "memory-viking-local env config");
+    const envCfg = pickAllowedKeys(envCfgRaw, [...ENV_CONFIG_ALLOWED_KEYS]);
 
     const cfg: Record<string, unknown> = {
-      ...envCfgRaw,
+      ...envCfg,
       ...pluginCfgRaw,
       envConfigPath: resolvedEnvConfigPath,
     };
@@ -206,7 +212,6 @@ export const memoryLocalVikingConfigSchema = {
         0,
         Math.min(1, toNumber(cfg.recallScoreThreshold, DEFAULT_RECALL_SCORE_THRESHOLD)),
       ),
-      includeOverviewInInject: cfg.includeOverviewInInject !== false,
       detailOnRecallTool: cfg.detailOnRecallTool === true,
       detailChars: Math.max(120, Math.min(20_000, Math.floor(toNumber(cfg.detailChars, DEFAULT_DETAIL_CHARS)))),
       detailCacheSize: Math.max(
@@ -221,7 +226,6 @@ export const memoryLocalVikingConfigSchema = {
         0,
         Math.min(1, toNumber(cfg.timelineScoreThreshold, DEFAULT_TIMELINE_SCORE_THRESHOLD)),
       ),
-      includeTimelineOverviewInInject: cfg.includeTimelineOverviewInInject !== false,
       mem0BaseUrl,
       mem0UserId,
       mem0AgentId,
@@ -277,11 +281,6 @@ export const memoryLocalVikingConfigSchema = {
       placeholder: String(DEFAULT_RECALL_SCORE_THRESHOLD),
       advanced: true,
     },
-    includeOverviewInInject: {
-      label: "Inject Memory Overview",
-      help: "Include L1 overview snippets for extracted memories.",
-      advanced: true,
-    },
     timelineRecallLimit: {
       label: "Timeline Recall Limit",
       placeholder: String(DEFAULT_TIMELINE_RECALL_LIMIT),
@@ -290,11 +289,6 @@ export const memoryLocalVikingConfigSchema = {
     timelineScoreThreshold: {
       label: "Timeline Recall Threshold",
       placeholder: String(DEFAULT_TIMELINE_SCORE_THRESHOLD),
-      advanced: true,
-    },
-    includeTimelineOverviewInInject: {
-      label: "Inject Timeline Overview",
-      help: "Include L1 overview snippets for timeline chunks.",
       advanced: true,
     },
     detailOnRecallTool: {

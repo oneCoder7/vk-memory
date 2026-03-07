@@ -141,37 +141,40 @@ vk-memory uninstall
 - `timeline` 负责“别丢细节”
 - `memory` 负责“别被噪声淹没”
 
-## 5. 为什么要同时召回 memory + timeline
+## 5. 为什么要同时召回 memory + timeline（加 recent-timeline）
 
-不是“每次都强行塞两份”，而是“两个索引都查，命中谁就注入谁”：
+不是“每次都强行塞两份”，而是“短期保底 + 双路语义召回”：
 
-1. 只用 `memory`：会丢掉刚发生、还没提炼的细节
-2. 只用 `timeline`：长期稳定事实不够干净，噪声偏多
-3. 双路召回：长期事实 + 近期细节可以同时成立
+1. `recent-timeline`：每轮固定注入当前 session 最近两轮（短期连续性保底）
+2. `memory`：补长期稳定事实
+3. `timeline`（跨 session）：补“还没提炼成 memory”的历史细节
 
-另外，timeline 召回默认会排除当前 session，避免把本轮内容原样回灌。
+说明：语义 `timeline` 召回默认排除当前 session（避免回灌），但 `recent-timeline` 会保底注入当前 session 最近两轮。
 
 ## 6. 每轮会话的触发时机（你最关心的“什么时候拉/存”）
 
 ### 6.1 对话开始前（`before_agent_start`）
 
-1. 读取当前 query
-2. 语义检索 `memory` 和 `timeline`
-3. 命中结果才注入 `prependContext`
-4. 无命中就不注入
+1. 读取当前 query，并做 metadata 压缩（`compactRecallQuery`）
+2. 固定读取当前 session 最近两轮，作为 `recent-timeline` 注入
+3. 语义检索 `memory` + 跨 session `timeline`
+4. 注入前做去重与动态裁剪（短期优先）
+5. 命中结果注入 `prependContext`，无命中则不注入
 
 注入形态示例：
 
 ```text
+<recent-timeline>
+1. [user] 请记住我本周只在周三发布
+2. [assistant] 已记录，本周发布窗口为周三
+</recent-timeline>
+
 <relevant-memories>
 1. [preference] 用户偏好 Vim
-   overview: Category: preference ...
 </relevant-memories>
 
 <relevant-timeline>
 1. [user] 昨天把发布窗口改到周三
-   session: default
-   overview: Session: default Role: user ...
 </relevant-timeline>
 ```
 
@@ -258,7 +261,35 @@ vk-memory uninstall
 - `VIKING_MEMORY_EMBEDDING_URL`
 - `VIKING_MEMORY_RERANK_URL`
 
-## 11. 常见问题（高频）
+## 11. 性能优化（已实现）
+
+当前版本已经内置以下优化（无需额外配置）：
+
+1. Query 压缩
+
+- 自动去掉 `Conversation info (untrusted metadata)` 等噪音字段，减少无效检索与误召回。
+
+1. 每轮短期保底注入
+
+- 固定注入当前 session 最近两轮（`recent-timeline`），避免“2 轮提炼窗口”导致短期上下文漏失。
+
+1. 语义召回结果缓存（TTL 60s）
+
+- 以 `session + query + index revision` 为键缓存 recall 结果，连续追问显著减少重复检索耗时。
+
+1. 10 轮注入去重
+
+- 同一 URI 在同一 session 最近 10 轮内不会重复注入。
+
+1. 跨块去重
+
+- `recent-timeline / relevant-timeline / relevant-memories` 之间再按 `sourceHash + abstract` 去重，避免重复事实多次注入。
+
+1. 动态 TopK（短期优先）
+
+- 高置信命中时优先保留短期 timeline，memory 自动收缩，降低注入 token 且保持连续性。
+
+## 12. 常见问题（高频）
 
 1. 为什么我感觉“都是 timeline”？
 
@@ -280,14 +311,9 @@ vk-memory uninstall
 
 1. 接入后为什么对话变慢？
 
-- 每轮 `before_agent_start` 都会做一次混合召回（embedding + qdrant + rerank，memory/timeline 两路）。
-- 如果 Agent 再主动调用 `memory_recall`，会多一轮召回（新版本已做并行与 rerank 候选上限优化）。
-- 可优先调小：`semanticCandidateMultiplier`（建议 2~3）、`recallLimit`、`timelineRecallLimit`。
-- 当前本地默认策略（降时延）：
-  - `auto-recall` 默认 `rerankMode=never`
-  - memory 总量 `<100` 时跳过 rerank
-  - 命中已足够且不歧义时跳过 rerank
-  - rerank 仅取最多 4 条，超时 1500ms，慢/空结果触发熔断（3 次后冷却 60s）
+- 每轮 `before_agent_start` 都会做一次召回流程；如果 Agent 再主动调用 `memory_recall`，会额外增加一次召回。
+- 当前版本已内置：query 压缩、60s recall 缓存、10 轮去重、跨块去重、短期优先动态 TopK。
+- 仍需进一步提速时，可调小：`semanticCandidateMultiplier`（建议 2~3）、`recallLimit`、`timelineRecallLimit`。
 
 1. 如何开详细日志排查？
 
@@ -302,9 +328,13 @@ vk-memory uninstall
   - `retrieve.timeline.start/done`
   - `memory_recall.start/done`
   - `auto-recall.start/done`
+  - `auto-recall.recent`
+  - `auto-recall.cache hit/store`
+  - `auto-recall.topk`
+  - `auto-recall.cross-dedup`
   - `summary.mem0.start/done` 与 `summary.mem0.http.start/done`
 
-## 12. 故障排查
+## 13. 故障排查
 
 1. `vk-memory: command not found`
 
@@ -328,7 +358,7 @@ vk-memory uninstall
 - 若改端口，确认 `VIKING_MEMORY_*` 同步
 - 冷启动阶段若看到 `embedding endpoint error`，通常是模型正在加载；新版 `vk-memory start` 会先等待预热完成再返回
 
-## 13. 无全局命令时兜底
+## 14. 无全局命令时兜底
 
 ```bash
 node ~/.openclaw/extensions/memory-viking-local/cli/vk-memory.js setup

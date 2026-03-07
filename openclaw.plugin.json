@@ -29,11 +29,6 @@
       "placeholder": "0.18",
       "advanced": true
     },
-    "includeOverviewInInject": {
-      "label": "Inject Memory Overview",
-      "help": "Include L1 overview snippets for extracted memories.",
-      "advanced": true
-    },
     "timelineRecallLimit": {
       "label": "Timeline Recall Limit",
       "placeholder": "6",
@@ -42,11 +37,6 @@
     "timelineScoreThreshold": {
       "label": "Timeline Recall Threshold",
       "placeholder": "0.12",
-      "advanced": true
-    },
-    "includeTimelineOverviewInInject": {
-      "label": "Inject Timeline Overview",
-      "help": "Include L1 overview snippets for timeline chunks.",
       "advanced": true
     },
     "detailOnRecallTool": {
@@ -104,10 +94,8 @@
       "debugLogs": { "type": "boolean" },
       "recallLimit": { "type": "number" },
       "recallScoreThreshold": { "type": "number" },
-      "includeOverviewInInject": { "type": "boolean" },
       "timelineRecallLimit": { "type": "number" },
       "timelineScoreThreshold": { "type": "number" },
-      "includeTimelineOverviewInInject": { "type": "boolean" },
       "detailOnRecallTool": { "type": "boolean" },
       "detailChars": { "type": "number" },
       "detailCacheSize": { "type": "number" },
