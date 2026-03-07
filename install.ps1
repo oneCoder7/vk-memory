@@ -25,7 +25,7 @@ $files = @(
   "package.json",
   ".gitignore",
   "README.md",
-  "README.zh-CN.md"
+  "README.en.md"
 )
 
 foreach ($f in $files) {

@@ -1,27 +1,32 @@
-# OpenClaw Local Memory Plugin (Viking Local + Mem0)
+# OpenClaw 本地记忆插件（Viking Local + Mem0）
 
-This plugin is designed to be simple to adopt:
-- Take over OpenClaw `plugins.slots.memory`
-- Capture every round incrementally into local timeline
-- Distill durable long-term memory via Mem0 OSS
-- Recall relevant memory before each round starts
+[中文](./README.md) | [English](./README.en.md)
 
-All local data is stored under `~/.viking-memory`.
 
-## 1. 3-Minute Quick Start
+这个插件的目标很直接：
 
-### 1.1 Prerequisites
+- 让 OpenClaw 的 memory slot 由本插件接管
+- 每轮对话结束都做全文落库（timeline）
+- 再把可长期复用的信息提炼成 durable memory（memory）
+- 对话开始前自动召回相关记忆注入上下文
+
+所有本地数据都在 `~/.viking-memory`。
+
+## 1. 3 分钟跑通（最短路径）
+
+### 1.1 你只需要准备
 
 1. Docker + Docker Compose v2
 2. Node.js >= 22
-3. OpenClaw CLI (`npm i -g openclaw`)
-4. One OpenAI-compatible LLM API key (for Mem0 summarization only)
+3. OpenClaw CLI（`npm i -g openclaw`）
+4. 一个 OpenAI-compatible 的 LLM Key（仅供 Mem0 提炼）
 
-Notes:
-- Qdrant + Infinity are local containers, no extra embedding API key required.
-- Any OpenAI-compatible provider is supported (OpenAI, OpenRouter, DeepSeek, SiliconFlow, Volcengine Ark, etc.).
+说明：
 
-### 1.2 Install and bind memory slot
+- Qdrant + Infinity（embedding/rerank）全部本地容器，不需要单独 API Key。
+- 兼容 OpenAI / OpenRouter / DeepSeek / SiliconFlow / 火山 Ark 等 OpenAI-compatible 供应商。
+
+### 1.2 安装并接管 memory slot
 
 macOS / Linux:
 
@@ -37,12 +42,13 @@ cd C:\path\to\memory-plugin
 .\install.ps1
 ```
 
-Install script will:
-1. Copy plugin to `~/.openclaw/extensions/memory-viking-local`
-2. Set `plugins.slots.memory=memory-viking-local`
-3. Create global command `vk-memory`
+安装后会：
 
-### 1.3 First run
+1. 复制插件到 `~/.openclaw/extensions/memory-viking-local`
+2. 设置 `plugins.slots.memory=memory-viking-local`
+3. 创建全局命令 `vk-memory`
+
+### 1.3 首次初始化 + 启动
 
 ```bash
 vk-memory setup
@@ -50,44 +56,48 @@ vk-memory start
 openclaw gateway
 ```
 
-Check slot ownership:
+检查是否接管成功：
 
 ```bash
 openclaw config get plugins.slots.memory
-# expected: memory-viking-local
+# 期望: memory-viking-local
 ```
 
-## 2. Global Commands
+## 2. 全局命令（你只需要记住这 6 个）
 
 ```bash
 vk-memory help
 ```
 
-| Command | Purpose |
-|---|---|
-| `vk-memory setup` | First-time init (plugin JSON + Docker stack `.env`) |
-| `vk-memory config` | Update existing config (including `debugLogs`) |
-| `vk-memory start` | Start local memory stack (`docker compose up -d`) |
-| `vk-memory stop` | Stop local memory stack |
-| `vk-memory status` | Show stack status |
-| `vk-memory migrate` | Import existing OpenClaw local file memory |
 
-## 3. Migrate Existing OpenClaw Memory (Local File Mode)
+| 命令                  | 作用                                 |
+| ------------------- | ---------------------------------- |
+| `vk-memory setup`   | 首次初始化（插件配置 JSON + Docker 栈 `.env`） |
+| `vk-memory config`  | 修改已有配置（包括 `debugLogs`）             |
+| `vk-memory start`   | 启动本地记忆栈（docker compose up -d）      |
+| `vk-memory stop`    | 停止本地记忆栈                            |
+| `vk-memory status`  | 查看容器状态                             |
+| `vk-memory migrate` | 迁移已有 OpenClaw 本地文件记忆               |
 
-If you already have memory in local OpenClaw workspace files, migrate once:
+
+## 3. 旧记忆迁移（仅本地文件模式）
+
+如果你已经在 OpenClaw 本地工作区里有历史记忆，执行一次迁移即可：
 
 ```bash
 vk-memory migrate
 ```
 
-Default source:
+默认迁移来源：
+
 - `~/.openclaw/workspace/MEMORY.md`
 - `~/.openclaw/workspace/memory/*.md`
 
-Important:
-- Only local file memory is supported here.
+重要说明：
 
-Useful options:
+- 这里只支持本地文件记忆迁移。
+
+常用参数：
 
 ```bash
 vk-memory migrate --dry-run
@@ -95,92 +105,99 @@ vk-memory migrate --workspace=~/.openclaw/workspace --chunk-chars=1200
 vk-memory migrate --root=~/.viking-memory
 ```
 
-Constraint:
-- `--root` must stay inside `~/.viking-memory` (plugin data boundary).
+约束：
 
-After migration:
-1. Migrated records are written into `~/.viking-memory/memories/*` and `index/catalog.json`
-2. When plugin starts, semantic backfill upserts these records into local Qdrant automatically
+- `--root` 必须位于 `~/.viking-memory` 内（插件数据边界）。
 
-## 4. Memory vs Timeline
+迁移后会发生什么：
 
-This is the key model:
+1. 数据写入 `~/.viking-memory/memories/*` 和 `index/catalog.json`
+2. 插件启动时会自动做语义回填，把迁移数据写入本地 Qdrant
 
-1. `timeline` = raw conversation event stream (high coverage, short/mid-term details)
-- Captured on every `agent_end`
-- Keeps recent details that may not be durable yet
+## 4. memory 和 timeline 到底有什么区别
 
-2. `memory` = distilled durable facts (high value, low noise)
-- Written after extraction window is reached
-- Stores stable preferences, constraints, long-term decisions
+这是最重要的概念：
 
-In short:
-- `timeline` prevents detail loss
-- `memory` prevents noise overload
+1. `timeline` = 每轮原始对话事件流（高覆盖、细粒度、短中期）
 
-## 5. Why Recall Both
+- 每轮 `agent_end` 都会写入
+- 适合保留“刚发生”的上下文细节
 
-The plugin does not blindly inject both every time.
-It searches both indexes and injects only matched results.
+1. `memory` = 从 timeline 中提炼出的长期事实（高价值、低噪声）
 
-Why two channels:
-1. `memory` only can miss fresh details not distilled yet.
-2. `timeline` only can be noisy and weak on stable long-term facts.
-3. Combined recall gives durable facts + recent context together.
+- 不是每轮都写入，而是达到提炼窗口后写入
+- 适合保留稳定偏好、长期约束、持续决策
 
-Timeline recall excludes current session by default to reduce echo.
+一句话：
 
-## 6. Round Lifecycle (When Pull/Store Happens)
+- `timeline` 负责“别丢细节”
+- `memory` 负责“别被噪声淹没”
 
-### 6.1 Before a round (`before_agent_start`)
+## 5. 为什么要同时召回 memory + timeline
 
-1. Build query from latest user text/prompt
-2. Search `memory` + `timeline`
-3. Inject only hits as `prependContext`
-4. No hits -> no injection
+不是“每次都强行塞两份”，而是“两个索引都查，命中谁就注入谁”：
 
-Example injection shape:
+1. 只用 `memory`：会丢掉刚发生、还没提炼的细节
+2. 只用 `timeline`：长期稳定事实不够干净，噪声偏多
+3. 双路召回：长期事实 + 近期细节可以同时成立
+
+另外，timeline 召回默认会排除当前 session，避免把本轮内容原样回灌。
+
+## 6. 每轮会话的触发时机（你最关心的“什么时候拉/存”）
+
+### 6.1 对话开始前（`before_agent_start`）
+
+1. 读取当前 query
+2. 语义检索 `memory` 和 `timeline`
+3. 命中结果才注入 `prependContext`
+4. 无命中就不注入
+
+注入形态示例：
 
 ```text
 <relevant-memories>
-1. [preference] User prefers Vim
+1. [preference] 用户偏好 Vim
    overview: Category: preference ...
 </relevant-memories>
 
 <relevant-timeline>
-1. [user] We moved release window to Wednesday yesterday
+1. [user] 昨天把发布窗口改到周三
    session: default
    overview: Session: default Role: user ...
 </relevant-timeline>
 ```
 
-### 6.2 After a round (`agent_end`)
+### 6.2 对话结束后（`agent_end`）
 
-1. Write incremental messages into timeline (always)
-2. Check extraction window
-3. If reached, call Mem0 extraction
-4. Store extracted items into durable memory
+1. 先把本轮增量消息写到 timeline（必做）
+2. 判断是否达到提炼窗口（轮数/字符/turn cap）
+3. 达到则调用 Mem0 提炼
+4. 提炼结果写入 memory
 
-Default extraction window:
+默认提炼窗口：
+
 - `pendingRounds >= 2 && pendingChars >= 200`
-- or forced when `pendingTurns >= 12`
+- 或 `pendingTurns >= 12` 强制触发
 
-## 7. What L0/L1/L2 Means Here
+## 7. L0 / L1 / L2 在本项目里是什么
 
-Both `memory` and `timeline` use L0/L1/L2:
+`memory` 和 `timeline` 都是三层：
 
-1. L0 (index)
+1. L0（索引层）
+
 - memory: `~/.viking-memory/index/catalog.json`
 - timeline: `~/.viking-memory/timeline/index/catalog.json`
 
-2. L1 (summary)
-- `.abstract.md` + `.overview.md`
+1. L1（摘要层）
 
-3. L2 (detail)
+- `.<abstract>.md` + `.<overview>.md`
+
+1. L2（详情层）
+
 - `content.md` + `meta.json`
-- Loaded lazily on demand (not eagerly every round)
+- 默认按需懒加载，不会每次都读全量正文
 
-## 8. Storage Layout
+## 8. 存储结构一览
 
 ```text
 ~/.viking-memory/
@@ -206,63 +223,74 @@ Both `memory` and `timeline` use L0/L1/L2:
             └── state.json
 ```
 
-## 9. Config Files
+## 9. 配置文件（只看两个）
 
-1. Plugin config: `~/.viking-memory/plugin.env.json`
-- Managed by `vk-memory setup/config`
-- Useful toggle: `debugLogs` (default `false`)
+1. 插件配置：`~/.viking-memory/plugin.env.json`
 
-2. Stack env: `deploy/local-stack/.env`
-- Template: [`deploy/local-stack/.env.example`](./deploy/local-stack/.env.example)
-- Required: `MEM0_LLM_API_KEY`
+- 由 `vk-memory setup/config` 写入
+- 常用：`debugLogs`（默认 `false`）
 
-## 10. Default Ports
+1. Docker 栈配置：`deploy/local-stack/.env`
+
+- 模板：`[deploy/local-stack/.env.example](./deploy/local-stack/.env.example)`
+- 必填：`MEM0_LLM_API_KEY`
+
+## 10. 默认端口
 
 - Mem0: `18888`
 - Qdrant: `16333`
 - Infinity Embed: `17997`
 - Infinity Rerank: `17998`
 
-If ports are changed, you may also need:
+如改端口，可能还需设置：
+
 - `VIKING_MEMORY_MEM0_URL`
 - `VIKING_MEMORY_QDRANT_URL`
 - `VIKING_MEMORY_EMBEDDING_URL`
 - `VIKING_MEMORY_RERANK_URL`
 
-## 11. FAQ
+## 11. 常见问题（高频）
 
-1. Why does it feel like everything is timeline?
-- Timeline is written every round by design; durable memory is batch-distilled by extraction window.
+1. 为什么我感觉“都是 timeline”？
 
-2. Why recall both memory and timeline?
-- Timeline preserves fresh details; memory preserves stable facts. One channel alone loses signal.
+- 因为 timeline 每轮必写；memory 是窗口触发提炼，不是每轮都有。
 
-3. Why does `openclaw memory status` not match this plugin behavior?
-- `openclaw memory` CLI reflects OpenClaw built-in memory indexing view, not necessarily your active memory-slot plugin data plane.
-- Trust `plugins.slots.memory` + plugin logs for slot-level behavior.
+1. 为什么要两路召回？
 
-4. How to enable verbose logs?
+- timeline 保近期细节，memory 保长期事实，只用一条路都会丢信息。
+
+1. `openclaw memory status` 为什么和这个插件表现不一致？
+
+- `openclaw memory` CLI 是 OpenClaw 内置 memory 管理视图，不等同于你当前 memory slot 插件的数据面。
+- 以 `plugins.slots.memory` 和插件日志为准。
+
+1. 如何开详细日志排查？
+
 - `vk-memory config --advanced`
-- Set `debugLogs = y`
-- Restart `openclaw gateway`
+- 设置 `debugLogs = y`
+- 重启 `openclaw gateway`
 
-## 12. Troubleshooting
+## 12. 故障排查
 
 1. `vk-memory: command not found`
-- Add `~/.local/bin` to PATH and reopen terminal.
 
-2. `vk-memory start` says `MEM0_LLM_API_KEY` is empty
-- Run `vk-memory config` and set it.
+- 把 `~/.local/bin` 加到 PATH，再开新终端。
 
-3. Mem0 extraction not running
+1. `vk-memory start` 报 `MEM0_LLM_API_KEY` 为空
+
+- 运行 `vk-memory config` 补齐。
+
+1. Mem0 提炼没生效
+
 - `vk-memory status`
 - `cd deploy/local-stack && docker compose logs -f mem0 mem0-configurator`
 
-4. Semantic recall is empty
-- Check qdrant/infinity containers
-- If ports changed, verify `VIKING_MEMORY_*` env overrides
+1. 语义召回为空
 
-## 13. Manual Fallback (No Wrapper)
+- 确认 qdrant / infinity 容器都在运行
+- 若改端口，确认 `VIKING_MEMORY_*` 同步
+
+## 13. 无全局命令时兜底
 
 ```bash
 node ~/.openclaw/extensions/memory-viking-local/cli/vk-memory.js setup
