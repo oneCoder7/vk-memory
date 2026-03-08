@@ -12,8 +12,6 @@ export type MemoryLocalVikingConfig = {
   detailOnRecallTool?: boolean;
   detailChars?: number;
   detailCacheSize?: number;
-  timelineRecallLimit?: number;
-  timelineScoreThreshold?: number;
   mem0BaseUrl?: string;
   mem0UserId?: string;
   mem0AgentId?: string;
@@ -34,8 +32,6 @@ const DEFAULT_RECALL_LIMIT = 10;
 const DEFAULT_RECALL_SCORE_THRESHOLD = 0.18;
 const DEFAULT_DETAIL_CHARS = 1_200;
 const DEFAULT_DETAIL_CACHE_SIZE = 64;
-const DEFAULT_TIMELINE_RECALL_LIMIT = 6;
-const DEFAULT_TIMELINE_SCORE_THRESHOLD = 0.12;
 const DEFAULT_MEM0_BASE_URL = "http://127.0.0.1:18888";
 const DEFAULT_MEM0_USER_ID = "openclaw-user";
 const DEFAULT_MEM0_AGENT_ID = "";
@@ -58,13 +54,16 @@ const ENV_CONFIG_ALLOWED_KEYS = [
   "detailOnRecallTool",
   "detailChars",
   "detailCacheSize",
-  "timelineRecallLimit",
-  "timelineScoreThreshold",
   "mem0TimeoutMs",
   "semanticCandidateMultiplier",
   "semanticBlendWeight",
   "semanticTimeoutMs",
   "semanticBackfillLimit",
+] as const;
+
+const LEGACY_ENV_CONFIG_KEYS = [
+  "timelineRecallLimit",
+  "timelineScoreThreshold",
 ] as const;
 
 const INTERNAL_FIXED_KEYS = [
@@ -168,7 +167,14 @@ export const memoryLocalVikingConfigSchema = {
       pluginCfgRaw = value as Record<string, unknown>;
     }
     dropInternalFixedKeys(pluginCfgRaw);
-    assertAllowedKeys(pluginCfgRaw, [...ENV_CONFIG_ALLOWED_KEYS], "memory-viking-local config");
+    assertAllowedKeys(
+      pluginCfgRaw,
+      [...ENV_CONFIG_ALLOWED_KEYS, ...LEGACY_ENV_CONFIG_KEYS],
+      "memory-viking-local config",
+    );
+    for (const legacyKey of LEGACY_ENV_CONFIG_KEYS) {
+      delete pluginCfgRaw[legacyKey];
+    }
 
     const rawEnvConfigPath =
       typeof pluginCfgRaw.envConfigPath === "string" && pluginCfgRaw.envConfigPath.trim()
@@ -181,6 +187,9 @@ export const memoryLocalVikingConfigSchema = {
 
     const envCfgRaw = readEnvConfig(resolvedEnvConfigPath);
     dropInternalFixedKeys(envCfgRaw);
+    for (const legacyKey of LEGACY_ENV_CONFIG_KEYS) {
+      delete envCfgRaw[legacyKey];
+    }
     const envCfg = pickAllowedKeys(envCfgRaw, [...ENV_CONFIG_ALLOWED_KEYS]);
 
     const cfg: Record<string, unknown> = {
@@ -217,14 +226,6 @@ export const memoryLocalVikingConfigSchema = {
       detailCacheSize: Math.max(
         8,
         Math.min(1_024, Math.floor(toNumber(cfg.detailCacheSize, DEFAULT_DETAIL_CACHE_SIZE))),
-      ),
-      timelineRecallLimit: Math.max(
-        1,
-        Math.min(20, Math.floor(toNumber(cfg.timelineRecallLimit, DEFAULT_TIMELINE_RECALL_LIMIT))),
-      ),
-      timelineScoreThreshold: Math.max(
-        0,
-        Math.min(1, toNumber(cfg.timelineScoreThreshold, DEFAULT_TIMELINE_SCORE_THRESHOLD)),
       ),
       mem0BaseUrl,
       mem0UserId,
@@ -279,16 +280,6 @@ export const memoryLocalVikingConfigSchema = {
     recallScoreThreshold: {
       label: "Memory Recall Threshold",
       placeholder: String(DEFAULT_RECALL_SCORE_THRESHOLD),
-      advanced: true,
-    },
-    timelineRecallLimit: {
-      label: "Timeline Recall Limit",
-      placeholder: String(DEFAULT_TIMELINE_RECALL_LIMIT),
-      advanced: true,
-    },
-    timelineScoreThreshold: {
-      label: "Timeline Recall Threshold",
-      placeholder: String(DEFAULT_TIMELINE_SCORE_THRESHOLD),
       advanced: true,
     },
     detailOnRecallTool: {

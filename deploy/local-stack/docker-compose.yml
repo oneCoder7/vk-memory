@@ -13,8 +13,6 @@ services:
       - MEM0_LLM_API_KEY=${MEM0_LLM_API_KEY}
       - MEM0_LLM_BASE_URL=${MEM0_LLM_BASE_URL:-https://api.openai.com/v1}
       - MEM0_LLM_MODEL=${MEM0_LLM_MODEL:-gpt-4.1-nano-2025-04-14}
-      - MEM0_LLM_TEMPERATURE=${MEM0_LLM_TEMPERATURE:-0.1}
-      - MEM0_LLM_MAX_TOKENS=${MEM0_LLM_MAX_TOKENS:-300}
       - MEM0_EMBED_BASE_URL=http://infinity-embed:7997
       - MEM0_EMBED_MODEL=BAAI/bge-m3
       - MEM0_EMBED_DIMS=1024

@@ -21,8 +21,6 @@ QDRANT_COLLECTION_NAME = os.environ.get("QDRANT_COLLECTION_NAME", "memories")
 MEM0_LLM_API_KEY = os.environ.get("MEM0_LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
 MEM0_LLM_BASE_URL = os.environ.get("MEM0_LLM_BASE_URL", "https://api.openai.com/v1")
 MEM0_LLM_MODEL = os.environ.get("MEM0_LLM_MODEL", "gpt-4.1-nano-2025-04-14")
-MEM0_LLM_TEMPERATURE = float(os.environ.get("MEM0_LLM_TEMPERATURE", "0.1"))
-MEM0_LLM_MAX_TOKENS = int(os.environ.get("MEM0_LLM_MAX_TOKENS", "300"))
 
 MEM0_EMBED_BASE_URL = os.environ.get("MEM0_EMBED_BASE_URL", "http://infinity-embed:7997")
 MEM0_EMBED_MODEL = os.environ.get("MEM0_EMBED_MODEL", "BAAI/bge-m3")
@@ -47,8 +45,6 @@ DEFAULT_CONFIG = {
             "api_key": MEM0_LLM_API_KEY,
             "openai_base_url": MEM0_LLM_BASE_URL,
             "model": MEM0_LLM_MODEL,
-            "temperature": MEM0_LLM_TEMPERATURE,
-            "max_tokens": MEM0_LLM_MAX_TOKENS,
         },
     },
     "embedder": {

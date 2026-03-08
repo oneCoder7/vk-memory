@@ -237,7 +237,7 @@ vk-memory uninstall
 
 - 模板：`[deploy/local-stack/.env.example](./deploy/local-stack/.env.example)`
 - 必填：`MEM0_LLM_API_KEY`
-- 默认：`MEM0_LLM_TEMPERATURE=0.1`、`MEM0_LLM_MAX_TOKENS=300`（可在 `vk-memory config --advanced` 调整）
+- 必填：`MEM0_LLM_BASE_URL`、`MEM0_LLM_MODEL`（可通过 `vk-memory config` 交互配置）
 
 ## 10. 默认端口
 
@@ -246,12 +246,12 @@ vk-memory uninstall
 - Infinity Embed: `17997`
 - Infinity Rerank: `17998`
 
-如改端口，可能还需设置：
+一般不需要额外环境变量。只有你手动改了端口/地址时，才需要设置：
 
-- `VIKING_MEMORY_MEM0_URL`
-- `VIKING_MEMORY_QDRANT_URL`
-- `VIKING_MEMORY_EMBEDDING_URL`
-- `VIKING_MEMORY_RERANK_URL`
+- `VIKING_MEMORY_MEM0_URL`（插件访问 Mem0）
+- `VIKING_MEMORY_QDRANT_URL`（插件访问 Qdrant）
+- `VIKING_MEMORY_EMBEDDING_URL`（插件访问 Infinity Embed）
+- `VIKING_MEMORY_RERANK_URL`（插件访问 Infinity Rerank）
 
 ## 11. 性能优化（已实现）
 
@@ -307,7 +307,7 @@ vk-memory uninstall
 
 - 每轮 `before_agent_start` 都会做一次召回流程；如果 Agent 再主动调用 `memory_recall`，会额外增加一次召回。
 - 当前版本已内置：query 压缩、60s recall 缓存、10 轮去重、跨块去重、短期优先动态 TopK。
-- 仍需进一步提速时，可调小：`semanticCandidateMultiplier`（建议 2~3）、`recallLimit`、`timelineRecallLimit`。
+- 仍需进一步提速时，可调小：`semanticCandidateMultiplier`（建议 2~3）、`recallLimit`。
 
 1. 如何开详细日志排查？
 

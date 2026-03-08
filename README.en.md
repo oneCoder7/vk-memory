@@ -218,7 +218,7 @@ Additionally:
 2. Stack env: `deploy/local-stack/.env`
 - Template: [`deploy/local-stack/.env.example`](./deploy/local-stack/.env.example)
 - Required: `MEM0_LLM_API_KEY`
-- Defaults: `MEM0_LLM_TEMPERATURE=0.1`, `MEM0_LLM_MAX_TOKENS=300` (tunable via `vk-memory config --advanced`)
+- Required: `MEM0_LLM_BASE_URL`, `MEM0_LLM_MODEL` (configured via `vk-memory config`)
 
 ## 10. Default Ports
 
@@ -227,7 +227,8 @@ Additionally:
 - Infinity Embed: `17997`
 - Infinity Rerank: `17998`
 
-If ports are changed, you may also need:
+In normal local setup, no extra env is required.  
+If you change ports/addresses manually, you may also need:
 - `VIKING_MEMORY_MEM0_URL`
 - `VIKING_MEMORY_QDRANT_URL`
 - `VIKING_MEMORY_EMBEDDING_URL`
@@ -282,7 +283,7 @@ The current version already includes the following optimizations (no extra confi
 5. Why did conversations become slower after enabling this plugin?
 - Each round runs a recall path in `before_agent_start`; if the agent also calls `memory_recall`, that adds another recall pass.
 - Current version already has query compaction, 60s recall cache, 10-round dedup, and relevance-first dynamic topK.
-- If more speed is needed, tune: `semanticCandidateMultiplier` (recommend 2-3), `recallLimit`, `timelineRecallLimit`.
+- If more speed is needed, tune: `semanticCandidateMultiplier` (recommend 2-3), `recallLimit`.
 
 6. How to enable verbose logs?
 - `vk-memory config --advanced`

@@ -99,6 +99,8 @@ const memoryPlugin = {
     const INJECTION_DEDUP_WINDOW_ROUNDS = 10;
     const AUTO_RECALL_MAX_INJECT_CHARS = 1_200;
     const AUTO_RECALL_CACHE_TTL_MS = 60_000;
+    const TOOL_TIMELINE_RECALL_LIMIT = 6;
+    const TOOL_TIMELINE_SCORE_THRESHOLD = 0.12;
     type AutoRecallCacheEntry = {
       expiresAt: number;
       createdAt: number;
@@ -571,11 +573,11 @@ const memoryPlugin = {
           const timelineLimit =
             typeof (params as { timelineLimit?: number }).timelineLimit === "number"
               ? Math.max(1, Math.min(20, Math.floor((params as { timelineLimit: number }).timelineLimit)))
-              : cfg.timelineRecallLimit;
+              : TOOL_TIMELINE_RECALL_LIMIT;
           const timelineScoreThreshold =
             typeof (params as { timelineScoreThreshold?: number }).timelineScoreThreshold === "number"
               ? Math.max(0, Math.min(1, (params as { timelineScoreThreshold: number }).timelineScoreThreshold))
-              : cfg.timelineScoreThreshold;
+              : TOOL_TIMELINE_SCORE_THRESHOLD;
           const includeDetails =
             typeof (params as { includeDetails?: boolean }).includeDetails === "boolean"
               ? Boolean((params as { includeDetails: boolean }).includeDetails)

@@ -30,8 +30,6 @@ const STACK_DEFAULTS = {
   MEM0_LLM_API_KEY: "",
   MEM0_LLM_BASE_URL: "https://api.openai.com/v1",
   MEM0_LLM_MODEL: "gpt-4.1-nano-2025-04-14",
-  MEM0_LLM_TEMPERATURE: "0.1",
-  MEM0_LLM_MAX_TOKENS: "300",
   HOST_MEM0_PORT: "18888",
   HOST_QDRANT_PORT: "16333",
   HOST_EMBEDDING_PORT: "17997",
@@ -478,8 +476,6 @@ function renderDotEnv(values) {
     `MEM0_LLM_API_KEY=${values.MEM0_LLM_API_KEY ?? ""}`,
     `MEM0_LLM_BASE_URL=${values.MEM0_LLM_BASE_URL ?? STACK_DEFAULTS.MEM0_LLM_BASE_URL}`,
     `MEM0_LLM_MODEL=${values.MEM0_LLM_MODEL ?? STACK_DEFAULTS.MEM0_LLM_MODEL}`,
-    `MEM0_LLM_TEMPERATURE=${values.MEM0_LLM_TEMPERATURE ?? STACK_DEFAULTS.MEM0_LLM_TEMPERATURE}`,
-    `MEM0_LLM_MAX_TOKENS=${values.MEM0_LLM_MAX_TOKENS ?? STACK_DEFAULTS.MEM0_LLM_MAX_TOKENS}`,
     "",
     "# Optional host port overrides (change only if conflicts exist)",
     `HOST_MEM0_PORT=${values.HOST_MEM0_PORT ?? STACK_DEFAULTS.HOST_MEM0_PORT}`,
@@ -633,10 +629,6 @@ async function ensureStackEnv(args) {
     values.MEM0_LLM_API_KEY = await askLine(rl, "MEM0_LLM_API_KEY", values.MEM0_LLM_API_KEY);
     values.MEM0_LLM_BASE_URL = await askLine(rl, "MEM0_LLM_BASE_URL", values.MEM0_LLM_BASE_URL);
     values.MEM0_LLM_MODEL = await askLine(rl, "MEM0_LLM_MODEL", values.MEM0_LLM_MODEL);
-    if (advancedMode) {
-      values.MEM0_LLM_TEMPERATURE = await askLine(rl, "MEM0_LLM_TEMPERATURE", values.MEM0_LLM_TEMPERATURE);
-      values.MEM0_LLM_MAX_TOKENS = await askLine(rl, "MEM0_LLM_MAX_TOKENS", values.MEM0_LLM_MAX_TOKENS);
-    }
     if (advancedMode) {
       values.HOST_MEM0_PORT = await askLine(rl, "HOST_MEM0_PORT", values.HOST_MEM0_PORT);
       values.HOST_QDRANT_PORT = await askLine(rl, "HOST_QDRANT_PORT", values.HOST_QDRANT_PORT);

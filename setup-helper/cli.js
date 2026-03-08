@@ -15,8 +15,6 @@ const SETUP_KEYS = [
   "debugLogs",
   "recallLimit",
   "recallScoreThreshold",
-  "timelineRecallLimit",
-  "timelineScoreThreshold",
   "detailOnRecallTool",
   "detailChars",
   "detailCacheSize",
@@ -154,8 +152,6 @@ async function runInteractive(configPath, options) {
     debugLogs: false,
     recallLimit: 10,
     recallScoreThreshold: 0.18,
-    timelineRecallLimit: 6,
-    timelineScoreThreshold: 0.12,
     detailOnRecallTool: false,
     detailChars: 1200,
     detailCacheSize: 64,
@@ -204,12 +200,6 @@ async function runInteractive(configPath, options) {
     const debugLogs = toYesNo(await ask(rl, "debugLogs (y/n)", seed.debugLogs ? "y" : "n"), seed.debugLogs);
 
     const recallLimit = toNumber(await ask(rl, "recallLimit", String(seed.recallLimit)), seed.recallLimit, 1, 20);
-    const timelineRecallLimit = toNumber(
-      await ask(rl, "timelineRecallLimit", String(seed.timelineRecallLimit)),
-      seed.timelineRecallLimit,
-      1,
-      20,
-    );
 
     if (selectedMode === MODE_BASIC) {
       return {
@@ -217,20 +207,12 @@ async function runInteractive(configPath, options) {
         rootDir,
         debugLogs,
         recallLimit,
-        timelineRecallLimit,
       };
     }
 
     const recallScoreThreshold = toFloat(
       await ask(rl, "recallScoreThreshold", String(seed.recallScoreThreshold)),
       seed.recallScoreThreshold,
-      0,
-      1,
-    );
-
-    const timelineScoreThreshold = toFloat(
-      await ask(rl, "timelineScoreThreshold", String(seed.timelineScoreThreshold)),
-      seed.timelineScoreThreshold,
       0,
       1,
     );
@@ -282,8 +264,6 @@ async function runInteractive(configPath, options) {
       debugLogs,
       recallLimit,
       recallScoreThreshold,
-      timelineRecallLimit,
-      timelineScoreThreshold,
       detailOnRecallTool,
       detailChars,
       detailCacheSize,
