@@ -423,7 +423,8 @@ export class SemanticVectorBridge {
     return this.enqueueWrite(async () => {
       const points: Array<{ id: string; vector: number[]; payload: Record<string, unknown> }> = [];
       for (const row of rows) {
-        const text = `${row.entry.abstract}\n${row.entry.overview}\n${row.content}`;
+        // OpenViking-style layered retrieval: vector index on L0 abstract only.
+        const text = row.entry.abstract;
         const vector = await this.embed(text);
         if (!vector || vector.length === 0) {
           continue;
@@ -478,7 +479,8 @@ export class SemanticVectorBridge {
     return this.enqueueWrite(async () => {
       const points: Array<{ id: string; vector: number[]; payload: Record<string, unknown> }> = [];
       for (const row of rows) {
-        const text = `${row.entry.abstract}\n${row.entry.overview}\n${row.content}`;
+        // OpenViking-style layered retrieval: vector index on L0 abstract only.
+        const text = `${row.entry.role}: ${row.entry.abstract}`;
         const vector = await this.embed(text);
         if (!vector || vector.length === 0) {
           continue;

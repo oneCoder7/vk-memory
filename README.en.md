@@ -129,42 +129,30 @@ In short:
 - `timeline` prevents detail loss
 - `memory` prevents noise overload
 
-## 5. Why Recall Both (plus recent-timeline)
+## 5. Current Injection Policy (memory-only)
 
-The plugin is not "always inject two channels".
-It uses short-term guaranteed context + dual semantic recall:
+Current version injects `memory` only, not `timeline`:
 
-1. `recent-timeline`: always inject recent two rounds from current session (short-term continuity baseline)
-2. `memory`: add stable long-term facts
-3. cross-session `timeline`: add details not distilled into memory yet
-
-Semantic timeline recall excludes current session by default (to avoid echo), while `recent-timeline` still guarantees current-session short-term context.
+1. Short-term continuity is maintained by OpenClaw native session context
+2. Plugin injection focuses on stable long-term facts
+3. `timeline` is used for post-round extraction windows and durable-memory generation
 
 ## 6. Round Lifecycle (When Pull/Store Happens)
 
 ### 6.1 Before a round (`before_agent_start`)
 
 1. Build query from latest user text/prompt and compact metadata noise (`compactRecallQuery`)
-2. Always fetch recent two rounds from current session as `recent-timeline`
-3. Run semantic recall for `memory` + cross-session `timeline`
-4. Dedup + dynamic topK trimming before final injection (short-term first)
+2. Run L0 (`abstract`) semantic recall for `memory`
+3. When candidates are ambiguous, run adaptive L1 (`overview`) rerank; L2 is not auto-injected
+4. Dedup + dynamic topK trimming before final injection (relevance first)
 5. Inject matched results as `prependContext`; no hits -> no injection
 
 Example injection shape:
 
 ```text
-<recent-timeline>
-1. [user] Please remember I only release on Wednesday this week
-2. [assistant] Noted, this week's release window is Wednesday
-</recent-timeline>
-
 <relevant-memories>
 1. [preference] User prefers Vim
 </relevant-memories>
-
-<relevant-timeline>
-1. [user] We moved release window to Wednesday yesterday
-</relevant-timeline>
 ```
 
 ### 6.2 After a round (`agent_end`)
@@ -180,18 +168,20 @@ Default extraction window:
 
 ## 7. What L0/L1/L2 Means Here
 
-Both `memory` and `timeline` use L0/L1/L2:
+Both `memory` and `timeline` use L0/L1/L2 (aligned with OpenViking semantics):
 
-1. L0 (index)
-- memory: `~/.viking-memory/index/catalog.json`
-- timeline: `~/.viking-memory/timeline/index/catalog.json`
+1. L0 (retrieval snapshot layer)
+- `.<abstract>.md`
 
-2. L1 (summary)
-- `.abstract.md` + `.overview.md`
+2. L1 (compressed overview layer)
+- `.<overview>.md`
 
 3. L2 (detail)
 - `content.md` + `meta.json`
 - Loaded lazily on demand (not eagerly every round)
+
+Additionally:
+- `index/catalog.json` and `timeline/index/catalog.json` are index metadata (retrieval entry), not separate L-layers.
 
 ## 8. Storage Layout
 
@@ -251,9 +241,11 @@ The current version already includes the following optimizations (no extra confi
 
 - Removes noisy metadata such as `Conversation info (untrusted metadata)` before retrieval.
 
-1. Per-round short-term baseline injection
+1. Layered retrieval (L0 -> L1, L2 on demand)
 
-- Always injects recent two rounds from current session (`recent-timeline`) to avoid short-window misses.
+- Vector retrieval indexes L0 `abstract` by default (lightweight and stable).
+- L1 `overview` rerank only runs when candidates are ambiguous.
+- L2 `content` is loaded only when manual `memory_recall` requests `includeDetails`.
 
 1. Semantic recall cache (TTL 60s)
 
@@ -263,21 +255,21 @@ The current version already includes the following optimizations (no extra confi
 
 - Same URI will not be injected again within the latest 10 rounds in the same session.
 
-1. Cross-block dedup
+1. Injection dedup
 
-- Dedups across `recent-timeline / relevant-timeline / relevant-memories` by `sourceHash + abstract`.
+- Dedups memory injection lines by `sourceHash + abstract`.
 
-1. Dynamic topK (short-term first)
+1. Dynamic topK (relevance first)
 
-- Under high confidence, timeline is prioritized and memory is shrunk automatically, reducing prompt tokens while keeping continuity.
+- Under high confidence, memory injection is automatically shrunk to reduce prompt tokens.
 
 ## 12. FAQ
 
 1. Why does it feel like everything is timeline?
 - Timeline is written every round by design; durable memory is batch-distilled by extraction window.
 
-2. Why recall both memory and timeline?
-- Timeline preserves fresh details; memory preserves stable facts. One channel alone loses signal.
+2. Why inject memory only now?
+- OpenClaw native session history already covers short-term continuity; plugin injection focuses on durable facts.
 
 3. Can I filter by memory type?
 - Yes. `memory_recall` supports `categories` (`preference/profile/fact/event/task`).
@@ -289,7 +281,7 @@ The current version already includes the following optimizations (no extra confi
 
 5. Why did conversations become slower after enabling this plugin?
 - Each round runs a recall path in `before_agent_start`; if the agent also calls `memory_recall`, that adds another recall pass.
-- Current version already has query compaction, 60s recall cache, 10-round dedup, cross-block dedup, and short-term-first dynamic topK.
+- Current version already has query compaction, 60s recall cache, 10-round dedup, and relevance-first dynamic topK.
 - If more speed is needed, tune: `semanticCandidateMultiplier` (recommend 2-3), `recallLimit`, `timelineRecallLimit`.
 
 6. How to enable verbose logs?
@@ -301,14 +293,13 @@ The current version already includes the following optimizations (no extra confi
 - Live tail example: `tail -f ~/.viking-memory/logs/sessions/default/$(date +%F).log`
 - Performance markers (with `debugLogs` enabled):
   - `retrieve.memory.start/done`
-  - `retrieve.timeline.start/done`
   - `memory_recall.start/done`
   - `auto-recall.start/done`
-  - `auto-recall.recent`
   - `auto-recall.cache hit/store`
   - `auto-recall.topk`
   - `auto-recall.cross-dedup`
   - `summary.mem0.start/done` and `summary.mem0.http.start/done`
+  - `retrieve.timeline.start/done` (only when `memory_recall` is called with timeline source)
 
 ## 13. Troubleshooting
 

@@ -141,41 +141,30 @@ vk-memory uninstall
 - `timeline` 负责“别丢细节”
 - `memory` 负责“别被噪声淹没”
 
-## 5. 为什么要同时召回 memory + timeline（加 recent-timeline）
+## 5. 当前注入策略（仅 memory）
 
-不是“每次都强行塞两份”，而是“短期保底 + 双路语义召回”：
+当前版本只注入 `memory`（长期记忆），不注入 `timeline`：
 
-1. `recent-timeline`：每轮固定注入当前 session 最近两轮（短期连续性保底）
-2. `memory`：补长期稳定事实
-3. `timeline`（跨 session）：补“还没提炼成 memory”的历史细节
-
-说明：语义 `timeline` 召回默认排除当前 session（避免回灌），但 `recent-timeline` 会保底注入当前 session 最近两轮。
+1. 短期连续性由 OpenClaw 原生 session 上下文维护
+2. 插件只补充长期稳定事实，避免重复注入短期信息
+3. `timeline` 只用于对话结束后的提炼窗口与长期记忆生成
 
 ## 6. 每轮会话的触发时机（你最关心的“什么时候拉/存”）
 
 ### 6.1 对话开始前（`before_agent_start`）
 
 1. 读取当前 query，并做 metadata 压缩（`compactRecallQuery`）
-2. 固定读取当前 session 最近两轮，作为 `recent-timeline` 注入
-3. 语义检索 `memory` + 跨 session `timeline`
-4. 注入前做去重与动态裁剪（短期优先）
+2. 做 L0（`abstract`）语义检索召回 `memory`
+3. 命中结果存在歧义时，再用 L1（`overview`）做自适应 rerank；L2 不参与自动注入
+4. 注入前做去重与动态裁剪（相关性优先）
 5. 命中结果注入 `prependContext`，无命中则不注入
 
 注入形态示例：
 
 ```text
-<recent-timeline>
-1. [user] 请记住我本周只在周三发布
-2. [assistant] 已记录，本周发布窗口为周三
-</recent-timeline>
-
 <relevant-memories>
 1. [preference] 用户偏好 Vim
 </relevant-memories>
-
-<relevant-timeline>
-1. [user] 昨天把发布窗口改到周三
-</relevant-timeline>
 ```
 
 ### 6.2 对话结束后（`agent_end`）
@@ -192,21 +181,24 @@ vk-memory uninstall
 
 ## 7. L0 / L1 / L2 在本项目里是什么
 
-`memory` 和 `timeline` 都是三层：
+`memory` 和 `timeline` 都是三层（对齐 OpenViking 语义）：
 
-1. L0（索引层）
+1. L0（检索快照层）
 
-- memory: `~/.viking-memory/index/catalog.json`
-- timeline: `~/.viking-memory/timeline/index/catalog.json`
+- `.<abstract>.md`
 
-1. L1（摘要层）
+1. L1（压缩概览层）
 
-- `.<abstract>.md` + `.<overview>.md`
+- `.<overview>.md`
 
 1. L2（详情层）
 
 - `content.md` + `meta.json`
 - 默认按需懒加载，不会每次都读全量正文
+
+另外：
+
+- `index/catalog.json` 和 `timeline/index/catalog.json` 是索引元数据（检索入口），不单独定义为 L 层。
 
 ## 8. 存储结构一览
 
@@ -269,9 +261,11 @@ vk-memory uninstall
 
 - 自动去掉 `Conversation info (untrusted metadata)` 等噪音字段，减少无效检索与误召回。
 
-1. 每轮短期保底注入
+1. 分层检索（L0 -> L1，L2 按需）
 
-- 固定注入当前 session 最近两轮（`recent-timeline`），避免“2 轮提炼窗口”导致短期上下文漏失。
+- 向量检索默认仅使用 L0 `abstract`（轻量、稳定）。
+- 仅在候选歧义时触发 L1 `overview` rerank。
+- L2 `content` 只在手动 recall 明确要求 `includeDetails` 时读取。
 
 1. 语义召回结果缓存（TTL 60s）
 
@@ -281,13 +275,13 @@ vk-memory uninstall
 
 - 同一 URI 在同一 session 最近 10 轮内不会重复注入。
 
-1. 跨块去重
+1. 注入去重
 
-- `recent-timeline / relevant-timeline / relevant-memories` 之间再按 `sourceHash + abstract` 去重，避免重复事实多次注入。
+- 对 memory 注入块按 `sourceHash + abstract` 去重，避免重复事实多次注入。
 
-1. 动态 TopK（短期优先）
+1. 动态 TopK（相关性优先）
 
-- 高置信命中时优先保留短期 timeline，memory 自动收缩，降低注入 token 且保持连续性。
+- 高置信命中时自动收缩注入条数，降低注入 token。
 
 ## 12. 常见问题（高频）
 
@@ -295,9 +289,9 @@ vk-memory uninstall
 
 - 因为 timeline 每轮必写；memory 是窗口触发提炼，不是每轮都有。
 
-1. 为什么要两路召回？
+1. 为什么现在只注入 memory？
 
-- timeline 保近期细节，memory 保长期事实，只用一条路都会丢信息。
+- 短期上下文由 OpenClaw 原生会话历史维护；插件注入只负责补长期事实，降低重复注入成本。
 
 1. 可以按记忆类型过滤吗？
 
@@ -325,14 +319,13 @@ vk-memory uninstall
 - 实时查看示例：`tail -f ~/.viking-memory/logs/sessions/default/$(date +%F).log`
 - 关键性能日志（开启 `debugLogs` 后）：
   - `retrieve.memory.start/done`
-  - `retrieve.timeline.start/done`
   - `memory_recall.start/done`
   - `auto-recall.start/done`
-  - `auto-recall.recent`
   - `auto-recall.cache hit/store`
   - `auto-recall.topk`
   - `auto-recall.cross-dedup`
   - `summary.mem0.start/done` 与 `summary.mem0.http.start/done`
+  - `retrieve.timeline.start/done`（仅当你手动调用 `memory_recall` 且包含 timeline 源时）
 
 ## 13. 故障排查
 
